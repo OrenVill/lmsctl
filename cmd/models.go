@@ -19,18 +19,22 @@ var modelsCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		return runModels(cmd, client)
+		return runModels(cmd, client, flagJSON)
 	},
 }
 
-func runModels(cmd *cobra.Command, client lmstudio.Client) error {
+func runModels(cmd *cobra.Command, client lmstudio.Client, jsonOut bool) error {
 	resp, err := client.ListModels(cmd.Context())
 	if err != nil {
 		return err
 	}
 
-	if flagJSON {
-		return output.JSON(cmd.OutOrStdout(), resp.Models)
+	if jsonOut {
+		models := resp.Models
+		if models == nil {
+			models = []lmstudio.Model{}
+		}
+		return output.JSON(cmd.OutOrStdout(), models)
 	}
 
 	tw := output.NewTable(cmd.OutOrStdout())
