@@ -1594,6 +1594,15 @@ import (
 	"lmsctl/internal/lmstudio/lmstudiotest"
 )
 
+`runModels` takes `jsonOut bool` as an explicit parameter (the same convention
+established when Task 12 was revised after review), rather than reading the
+`flagJSON` global directly — this keeps it a pure function of its arguments
+and avoids tests needing to mutate/restore global state. `resp.Models` is
+also guarded against a nil slice before being marshaled, so `--json` reports
+`[]` rather than `null` if LM Studio ever returns a response with no
+`models` field.
+
+```go
 func TestRunModels_TableOutputShowsStateAndSize(t *testing.T) {
 	fake := &lmstudiotest.Fake{
 		ModelsResponse: &lmstudio.ModelsResponse{Models: []lmstudio.Model{
@@ -1613,7 +1622,7 @@ func TestRunModels_TableOutputShowsStateAndSize(t *testing.T) {
 	out := &bytes.Buffer{}
 	cmd.SetOut(out)
 
-	if err := runModels(cmd, fake); err != nil {
+	if err := runModels(cmd, fake, false); err != nil {
 		t.Fatalf("runModels: %v", err)
 	}
 
@@ -1640,9 +1649,6 @@ func TestFormatBytes(t *testing.T) {
 }
 
 func TestRunModels_JSONOutput(t *testing.T) {
-	flagJSON = true
-	defer func() { flagJSON = false }()
-
 	fake := &lmstudiotest.Fake{
 		ModelsResponse: &lmstudio.ModelsResponse{Models: []lmstudio.Model{
 			{Key: "openai/gpt-oss-20b"},
@@ -1652,11 +1658,35 @@ func TestRunModels_JSONOutput(t *testing.T) {
 	out := &bytes.Buffer{}
 	cmd.SetOut(out)
 
-	if err := runModels(cmd, fake); err != nil {
+	if err := runModels(cmd, fake, true); err != nil {
 		t.Fatalf("runModels: %v", err)
 	}
 	if !strings.Contains(out.String(), `"key": "openai/gpt-oss-20b"`) {
 		t.Errorf("output = %q, want JSON containing the model key", out.String())
+	}
+}
+
+func TestRunModels_JSONOutputWithNoModelsIsEmptyArrayNotNull(t *testing.T) {
+	fake := &lmstudiotest.Fake{ModelsResponse: &lmstudio.ModelsResponse{}}
+	cmd := &cobra.Command{}
+	out := &bytes.Buffer{}
+	cmd.SetOut(out)
+
+	if err := runModels(cmd, fake, true); err != nil {
+		t.Fatalf("runModels: %v", err)
+	}
+	if strings.Contains(out.String(), "null") {
+		t.Errorf("output = %q, want [] not null when there are no models", out.String())
+	}
+}
+
+func TestRunModels_PropagatesClientError(t *testing.T) {
+	fake := &lmstudiotest.Fake{ListModelsErr: &lmstudio.ErrUnreachable{Host: "http://host:1234"}}
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+
+	if err := runModels(cmd, fake, false); err == nil {
+		t.Fatal("expected error, got nil")
 	}
 }
 ```
@@ -1690,18 +1720,22 @@ var modelsCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		return runModels(cmd, client)
+		return runModels(cmd, client, flagJSON)
 	},
 }
 
-func runModels(cmd *cobra.Command, client lmstudio.Client) error {
+func runModels(cmd *cobra.Command, client lmstudio.Client, jsonOut bool) error {
 	resp, err := client.ListModels(cmd.Context())
 	if err != nil {
 		return err
 	}
 
-	if flagJSON {
-		return output.JSON(cmd.OutOrStdout(), resp.Models)
+	if jsonOut {
+		models := resp.Models
+		if models == nil {
+			models = []lmstudio.Model{}
+		}
+		return output.JSON(cmd.OutOrStdout(), models)
 	}
 
 	tw := output.NewTable(cmd.OutOrStdout())
@@ -1741,7 +1775,7 @@ func init() {
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `go test ./cmd/... -run 'TestRunModels|TestFormatBytes' -v`
-Expected: PASS (all subtests)
+Expected: PASS (all 5 subtests)
 
 - [ ] **Step 5: Commit**
 
