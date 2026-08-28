@@ -38,31 +38,40 @@ func TestNewTable_AlignsColumns(t *testing.T) {
 	}
 }
 
-func TestPadRight_PadsUsingPlainLengthNotColoredLength(t *testing.T) {
-	// "colored" simulates an ANSI-wrapped string that's longer in bytes
-	// than the plain text it wraps -- PadRight must pad based on plain's
-	// length, not colored's, or alignment breaks when color is enabled.
-	got := PadRight("ab", "\033[36mab\033[0m", 5)
+func TestPadRight_PadsToWidthAfterApplyingStyle(t *testing.T) {
+	got := PadRight("ab", 5, func(s string) string { return "\033[36m" + s + "\033[0m" })
 	want := "\033[36mab\033[0m   "
 	if got != want {
 		t.Errorf("PadRight = %q, want %q", got, want)
 	}
 }
 
-func TestPadRight_NoPaddingWhenPlainAlreadyMeetsWidth(t *testing.T) {
-	got := PadRight("hello", "hello", 3)
+func TestPadRight_NoPaddingWhenAlreadyAtOrOverWidth(t *testing.T) {
+	got := PadRight("hello", 3, func(s string) string { return s })
 	if got != "hello" {
 		t.Errorf("PadRight = %q, want %q (no padding, and no truncation)", got, "hello")
 	}
 }
 
-func TestPadRight_PlainAndColoredCanDiffer(t *testing.T) {
-	// The common real usage: colored is plain wrapped in ANSI codes, but
-	// PadRight doesn't require that relationship -- it trusts plain's
-	// length and appends colored verbatim.
-	got := PadRight("KEY", "COLORED-KEY", 6)
-	want := "COLORED-KEY   "
-	if got != want {
-		t.Errorf("PadRight = %q, want %q", got, want)
+func TestPadRight_ZeroAndNegativeWidthReturnStyledUnpadded(t *testing.T) {
+	for _, width := range []int{0, -3} {
+		got := PadRight("ab", width, func(s string) string { return s })
+		if got != "ab" {
+			t.Errorf("PadRight(%q, %d, ...) = %q, want %q", "ab", width, got, "ab")
+		}
+	}
+}
+
+func TestPadRight_EmptyStringPadsToFullWidth(t *testing.T) {
+	got := PadRight("", 5, func(s string) string { return s })
+	if got != "     " {
+		t.Errorf("PadRight = %q, want 5 spaces", got)
+	}
+}
+
+func TestPadRight_IdentityStyleIsANoOp(t *testing.T) {
+	got := PadRight("KEY", 6, func(s string) string { return s })
+	if got != "KEY   " {
+		t.Errorf("PadRight = %q, want %q", got, "KEY   ")
 	}
 }
