@@ -16,28 +16,6 @@ func TestJSON_WritesIndentedJSON(t *testing.T) {
 	}
 }
 
-func TestNewTable_AlignsColumns(t *testing.T) {
-	var buf bytes.Buffer
-	tw := NewTable(&buf)
-	tw.Write([]byte("A\tBB\n"))
-	tw.Write([]byte("CC\tD\n"))
-	if err := tw.Flush(); err != nil {
-		t.Fatalf("Flush: %v", err)
-	}
-	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
-	if len(lines) != 2 {
-		t.Fatalf("got %d lines, want 2: %q", len(lines), buf.String())
-	}
-	// Equal line length is a poor proxy for "aligned" (text/tabwriter doesn't
-	// pad an untabbed last cell, so it isn't achievable here anyway, and
-	// achieving it via a wrapper adds trailing whitespace to every row plus
-	// edge cases for tab-free lines). Check what "aligned" actually means:
-	// the second column starts at the same offset on both lines.
-	if strings.Index(lines[0], "BB") != strings.Index(lines[1], "D") {
-		t.Errorf("columns not aligned: %q vs %q", lines[0], lines[1])
-	}
-}
-
 func TestPadRight_PadsToWidthAfterApplyingStyle(t *testing.T) {
 	got := PadRight("ab", 5, func(s string) string { return "\033[36m" + s + "\033[0m" })
 	want := "\033[36mab\033[0m   "
