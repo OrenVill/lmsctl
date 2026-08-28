@@ -21,7 +21,7 @@ func TestRunStatus_NoModelsLoaded(t *testing.T) {
 	out := &bytes.Buffer{}
 	cmd.SetOut(out)
 
-	if err := runStatus(cmd, fake, "192.168.1.50:1234"); err != nil {
+	if err := runStatus(cmd, fake, "192.168.1.50:1234", false); err != nil {
 		t.Fatalf("runStatus: %v", err)
 	}
 	if !strings.Contains(out.String(), "No models currently loaded") {
@@ -39,7 +39,7 @@ func TestRunStatus_ReportsLoadedModel(t *testing.T) {
 	out := &bytes.Buffer{}
 	cmd.SetOut(out)
 
-	if err := runStatus(cmd, fake, "192.168.1.50:1234"); err != nil {
+	if err := runStatus(cmd, fake, "192.168.1.50:1234", false); err != nil {
 		t.Fatalf("runStatus: %v", err)
 	}
 	if !strings.Contains(out.String(), "openai/gpt-oss-20b (inst-1)") {
@@ -52,15 +52,12 @@ func TestRunStatus_PropagatesClientError(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetOut(&bytes.Buffer{})
 
-	if err := runStatus(cmd, fake, "host:1234"); err == nil {
+	if err := runStatus(cmd, fake, "host:1234", false); err == nil {
 		t.Fatal("expected error, got nil")
 	}
 }
 
 func TestRunStatus_JSONOutput(t *testing.T) {
-	flagJSON = true
-	defer func() { flagJSON = false }()
-
 	fake := &lmstudiotest.Fake{
 		ModelsResponse: &lmstudio.ModelsResponse{Models: []lmstudio.Model{
 			{Key: "openai/gpt-oss-20b", LoadedInstances: []lmstudio.LoadedInstance{{ID: "inst-1"}}},
@@ -70,10 +67,28 @@ func TestRunStatus_JSONOutput(t *testing.T) {
 	out := &bytes.Buffer{}
 	cmd.SetOut(out)
 
-	if err := runStatus(cmd, fake, "host:1234"); err != nil {
+	if err := runStatus(cmd, fake, "host:1234", true); err != nil {
 		t.Fatalf("runStatus: %v", err)
 	}
-	if !strings.Contains(out.String(), `"openai/gpt-oss-20b (inst-1)"`) {
-		t.Errorf("output = %q, want JSON containing the loaded model", out.String())
+	if !strings.Contains(out.String(), `"key": "openai/gpt-oss-20b"`) || !strings.Contains(out.String(), `"instance_id": "inst-1"`) {
+		t.Errorf("output = %q, want JSON containing the loaded model's key and instance_id", out.String())
+	}
+}
+
+func TestRunStatus_JSONOutputWithNothingLoadedOmitsNull(t *testing.T) {
+	fake := &lmstudiotest.Fake{
+		ModelsResponse: &lmstudio.ModelsResponse{Models: []lmstudio.Model{
+			{Key: "openai/gpt-oss-20b"},
+		}},
+	}
+	cmd := &cobra.Command{}
+	out := &bytes.Buffer{}
+	cmd.SetOut(out)
+
+	if err := runStatus(cmd, fake, "host:1234", true); err != nil {
+		t.Fatalf("runStatus: %v", err)
+	}
+	if strings.Contains(out.String(), "null") {
+		t.Errorf("output = %q, want loaded_models to be [] not null when nothing is loaded", out.String())
 	}
 }
