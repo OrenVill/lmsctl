@@ -2582,3 +2582,49 @@ git commit -m "Add README and complete lmsctl v1"
 - **Spec coverage:** model lifecycle (list/load/unload) → Tasks 4–6, 13–15; status/monitoring → Tasks 4, 12; REST API connection → Task 4; config file with default host, flag/env override → Tasks 8–10; Go + cobra + yaml → Tasks 1, 8; error handling for unreachable/401/404 → Tasks 3–6; JSON + table output → Tasks 11–15; testing approach (fake client, httptest, manual smoke test) → Tasks 4–7, 16.
 - **Out of scope confirmed:** no `chat`/`pull` commands are included, matching the spec.
 - **Open item resolved:** the spec's open item (exact `load`/`list` JSON schemas) was resolved by checking LM Studio's live developer docs before writing this plan; those schemas are recorded above and used verbatim in Task 2's types.
+
+## Final full-implementation review fixes (post-Task 16)
+
+A holistic review across the whole implementation (Tasks 1-16 combined —
+something no single-task review could catch) found three real issues once
+everything was assembled and exercised end-to-end:
+
+1. **Critical: the 4096-byte body cap from Task 4's hardening fix
+   (`26f9760`) applies to successful responses, not just error bodies.**
+   `do()` read the *entire* response body (success or error) through
+   `io.LimitReader(resp.Body, maxErrorBodyBytes)` before either building an
+   error or unmarshaling `out`. A `GET /api/v1/models` response naturally
+   exceeds 4096 bytes once a user has more than ~10-13 downloaded models
+   (real model entries carry more fields than the plan's test fixtures,
+   which were all a few hundred bytes), silently truncating the JSON and
+   producing `"parsing response body: unexpected end of JSON input"` for
+   `status`, `models`, and `unload` — while `load` (small response) worked
+   fine, making the failure look like an API-shape mismatch rather than a
+   client bug. Fixed: the cap now applies only when building an error
+   message (non-2xx path); a 2xx response is decoded directly via
+   `json.NewDecoder(resp.Body).Decode(out)` with no artificial size limit
+   (acceptable for a personal tool talking to a server on your own LAN).
+2. **Important: `lmsctl config show` never showed the *effective*
+   configuration** — despite its `Short` text, the design spec, and the
+   README all saying it does — it printed the config file's raw contents
+   only, ignoring `--host`/`--token`/`LMSCTL_HOST`/`LMSCTL_TOKEN`. Fixed by
+   adding `config.EffectiveDisplay(...)` (like `Resolve`, but tolerates a
+   missing host instead of erroring, since `show` should always print
+   *something* rather than fail) and having `configShowCmd` use it.
+3. **Important: `--json` was a persistent root flag, so `unload` and
+   `config` silently accepted and ignored it** (and `--help` on those
+   commands falsely advertised it under "Global Flags"). Fixed by making
+   `--json` a local flag on `status`, `models`, and `load` only (each
+   command's `init()` registers its own `Bool("json", false, ...)`, and
+   `RunE` reads it via `cmd.Flags().GetBool("json")` instead of a shared
+   package-level `flagJSON` var, which was removed from `cmd/root.go`).
+
+Two cheap, related cleanups rode along in the same fix: `cmd/load.go`'s
+`loadFlagContextLength`/`loadFlagFlashAttn`/`loadFlagOffloadKV` package
+vars were write-only dead storage (`buildLoadRequest` already reads flags
+through the `*pflag.FlagSet` accessors, never those vars) — removed in
+favor of plain `Flags().Int(...)`/`Flags().Bool(...)` registration; and
+`unloadCmd.RunE` now validates its `model`/`--all` combination before
+calling `newClient()`, so a misused invocation reports the right error
+even when no host is configured yet (the check still also lives inside
+`runUnload` itself, since tests call that function directly).
