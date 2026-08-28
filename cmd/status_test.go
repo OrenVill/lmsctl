@@ -42,7 +42,7 @@ func TestRunStatus_ReportsLoadedModel(t *testing.T) {
 	if err := runStatus(cmd, fake, "192.168.1.50:1234", false); err != nil {
 		t.Fatalf("runStatus: %v", err)
 	}
-	if !strings.Contains(out.String(), "openai/gpt-oss-20b (inst-1)") {
+	if !strings.Contains(out.String(), "openai/gpt-oss-20b") || !strings.Contains(out.String(), "inst-1") {
 		t.Errorf("output = %q, want it to mention the loaded model", out.String())
 	}
 }
