@@ -385,6 +385,11 @@ func (e *ErrModelNotLoaded) Error() string {
 }
 ```
 
+(`ErrModelNotLoaded`'s message was later revised, and a further `ErrInstanceNotFound`
+type was added after Task 15's review — see that task's notes; both changes are
+reflected in the actual committed `errors.go`, not repeated here to avoid
+re-litigating history in this earlier section.)
+
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `go test ./internal/lmstudio/... -run 'TestErr' -v`
@@ -631,6 +636,31 @@ func (c *HTTPClient) UnloadModel(ctx context.Context, instanceID string) error {
 }
 ```
 
+**Later revised** (after Task 15's code review): once `runUnload` (Task 15)
+existed as `UnloadModel`'s only caller, a reviewer found it had no way to
+distinguish "the instance is already gone" (a harmless race — worth
+skipping and continuing) from any other failure (worth aborting on), because
+`httpStatusError` is unexported. `UnloadModel` was changed to map 404 to a
+new exported `ErrInstanceNotFound{InstanceID: instanceID}` type (added to
+`errors.go`) instead of passing the generic `httpStatusError` through:
+
+```go
+func (c *HTTPClient) UnloadModel(ctx context.Context, instanceID string) error {
+	// Maps 404 to ErrInstanceNotFound rather than ErrModelNotFound: this
+	// method only ever receives instance IDs the caller resolved itself via
+	// ListModels, never a user-typed model key, so ErrModelNotFound's "run
+	// 'lmsctl models'" advice would be wrong here. A 404 means the instance
+	// is already gone -- most likely already unloaded -- which callers can
+	// treat as a harmless race rather than a hard failure.
+	err := c.do(ctx, http.MethodPost, "/api/v1/models/unload", unloadModelRequest{InstanceID: instanceID}, nil)
+	var statusErr *httpStatusError
+	if errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusNotFound {
+		return &ErrInstanceNotFound{InstanceID: instanceID}
+	}
+	return err
+}
+```
+
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `go test ./internal/lmstudio/... -run 'TestListModels' -v`
@@ -765,6 +795,38 @@ func TestUnloadModel_404ReturnsGenericErrorNotErrModelNotFound(t *testing.T) {
 	var notFound *ErrModelNotFound
 	if errors.As(err, &notFound) {
 		t.Fatalf("err = %v, want a generic error, not *ErrModelNotFound (instance IDs aren't model keys)", err)
+	}
+}
+```
+
+**Superseded** (after Task 15's code review, alongside the `UnloadModel`
+revision above): "a generic error" turned out to be a dead end for
+`runUnload`, which needs to distinguish "already gone" from any other
+failure. Replaced with a test that pins the new `*ErrInstanceNotFound` type
+instead:
+
+```go
+func TestUnloadModel_404ReturnsErrInstanceNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(strings.TrimPrefix(srv.URL, "http://"), "")
+	err := c.UnloadModel(context.Background(), "inst-missing")
+	var notFound *ErrInstanceNotFound
+	if !errors.As(err, &notFound) {
+		t.Fatalf("err = %v, want *ErrInstanceNotFound", err)
+	}
+	if notFound.InstanceID != "inst-missing" {
+		t.Errorf("InstanceID = %q, want %q", notFound.InstanceID, "inst-missing")
+	}
+	// Confirm it's NOT ErrModelNotFound -- that error's advice ("run
+	// 'lmsctl models'") is for a model key the user typed, not an instance
+	// ID this package resolved itself.
+	var wrongType *ErrModelNotFound
+	if errors.As(err, &wrongType) {
+		t.Fatalf("err = %v, should not be *ErrModelNotFound", err)
 	}
 }
 ```
@@ -2185,6 +2247,207 @@ Expected: PASS (all 5 subtests)
 ```bash
 git add cmd/unload.go cmd/unload_test.go
 git commit -m "Add lmsctl unload command"
+```
+
+**Follow-up fix** (after code review, once this was the only caller of
+`UnloadModel` and the design could actually be exercised end-to-end): three
+issues were found and fixed together, since they're all in the same small
+function. (1) `unload <model> --all` silently ignored `<model>` and unloaded
+everything — surprising scope widening, now rejected. (2) A 404 on unload
+(the instance already gone, e.g. via LM Studio's own idle eviction or its
+UI) aborted the whole sweep and left later instances unattempted, even
+though "already gone" is the goal state, not a failure — now uses the new
+`ErrInstanceNotFound` type (see Tasks 4/6's revisions above) to skip and
+continue instead. (3) A model key that isn't downloaded at all got the same
+"not currently loaded" message as one that's downloaded-but-idle, even
+though the data in hand (`resp.Models`) can tell them apart — now returns
+`ErrModelNotFound` for the former.
+
+Replace `cmd/unload.go` with:
+
+```go
+package cmd
+
+import (
+	"errors"
+	"fmt"
+
+	"github.com/spf13/cobra"
+
+	"lmsctl/internal/lmstudio"
+)
+
+var unloadFlagAll bool
+
+var unloadCmd = &cobra.Command{
+	Use:   "unload [model]",
+	Short: "Unload a model (or all loaded models) on the remote LM Studio instance",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		client, _, err := newClient()
+		if err != nil {
+			return err
+		}
+		var model string
+		if len(args) == 1 {
+			model = args[0]
+		}
+		return runUnload(cmd, client, model, unloadFlagAll)
+	},
+}
+
+func runUnload(cmd *cobra.Command, client lmstudio.Client, model string, all bool) error {
+	if all && model != "" {
+		return errors.New("pass either a model or --all, not both")
+	}
+	if !all && model == "" {
+		return errors.New("specify a model to unload or pass --all")
+	}
+
+	resp, err := client.ListModels(cmd.Context())
+	if err != nil {
+		return err
+	}
+
+	found := false
+	var toUnload []string
+	for _, m := range resp.Models {
+		if !all && m.Key != model {
+			continue
+		}
+		found = true
+		for _, inst := range m.LoadedInstances {
+			toUnload = append(toUnload, inst.ID)
+		}
+	}
+
+	if len(toUnload) == 0 {
+		if all {
+			fmt.Fprintln(cmd.OutOrStdout(), "No models currently loaded.")
+			return nil
+		}
+		if !found {
+			return &lmstudio.ErrModelNotFound{Model: model}
+		}
+		return &lmstudio.ErrModelNotLoaded{Model: model}
+	}
+
+	for _, id := range toUnload {
+		if err := client.UnloadModel(cmd.Context(), id); err != nil {
+			var notFound *lmstudio.ErrInstanceNotFound
+			if errors.As(err, &notFound) {
+				fmt.Fprintf(cmd.OutOrStdout(), "Instance %s was already unloaded\n", id)
+				continue
+			}
+			return err
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Unloaded instance %s\n", id)
+	}
+	return nil
+}
+
+func init() {
+	unloadCmd.Flags().BoolVar(&unloadFlagAll, "all", false, "unload every currently loaded model")
+	rootCmd.AddCommand(unloadCmd)
+}
+```
+
+Add `"errors"` to `cmd/unload_test.go`'s imports, and append these tests
+(the original 5 tests above are unchanged and still apply):
+
+```go
+func TestRunUnload_RejectsModelWithAll(t *testing.T) {
+	fake := &lmstudiotest.Fake{ModelsResponse: modelsWithLoaded()}
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+
+	if err := runUnload(cmd, fake, "openai/gpt-oss-20b", true); err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if len(fake.UnloadInstanceIDs) != 0 {
+		t.Errorf("unloaded instance ids = %v, want none (should reject before calling the client)", fake.UnloadInstanceIDs)
+	}
+}
+
+func TestRunUnload_SkipsAlreadyUnloadedInstanceAndContinues(t *testing.T) {
+	fake := &lmstudiotest.Fake{
+		ModelsResponse: modelsWithLoaded(),
+		UnloadModelErr: &lmstudio.ErrInstanceNotFound{InstanceID: "inst-1"},
+	}
+	cmd := &cobra.Command{}
+	out := &bytes.Buffer{}
+	cmd.SetOut(out)
+
+	if err := runUnload(cmd, fake, "", true); err != nil {
+		t.Fatalf("runUnload: %v", err)
+	}
+	if len(fake.UnloadInstanceIDs) != 2 {
+		t.Errorf("unload attempts = %v, want 2 (both instances attempted despite the error)", fake.UnloadInstanceIDs)
+	}
+	if !strings.Contains(out.String(), "already unloaded") {
+		t.Errorf("output = %q, want it to say the instance was already unloaded", out.String())
+	}
+}
+
+func TestRunUnload_PropagatesGenericUnloadError(t *testing.T) {
+	fake := &lmstudiotest.Fake{
+		ModelsResponse: modelsWithLoaded(),
+		UnloadModelErr: &lmstudio.ErrUnreachable{Host: "http://host:1234"},
+	}
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+
+	if err := runUnload(cmd, fake, "openai/gpt-oss-20b", false); err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestRunUnload_PropagatesListModelsError(t *testing.T) {
+	fake := &lmstudiotest.Fake{ListModelsErr: &lmstudio.ErrUnreachable{Host: "http://host:1234"}}
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+
+	if err := runUnload(cmd, fake, "openai/gpt-oss-20b", false); err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestRunUnload_UnknownModelReturnsErrModelNotFound(t *testing.T) {
+	fake := &lmstudiotest.Fake{ModelsResponse: modelsWithLoaded()}
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+
+	err := runUnload(cmd, fake, "totally/unknown", false)
+	var notFound *lmstudio.ErrModelNotFound
+	if !errors.As(err, &notFound) {
+		t.Fatalf("err = %v, want *lmstudio.ErrModelNotFound", err)
+	}
+}
+
+func TestRunUnload_UnloadsAllInstancesOfMatchingModel(t *testing.T) {
+	fake := &lmstudiotest.Fake{ModelsResponse: &lmstudio.ModelsResponse{Models: []lmstudio.Model{
+		{Key: "multi/instance", LoadedInstances: []lmstudio.LoadedInstance{{ID: "inst-a"}, {ID: "inst-b"}}},
+	}}}
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+
+	if err := runUnload(cmd, fake, "multi/instance", false); err != nil {
+		t.Fatalf("runUnload: %v", err)
+	}
+	if len(fake.UnloadInstanceIDs) != 2 {
+		t.Errorf("unloaded instance ids = %v, want 2 entries", fake.UnloadInstanceIDs)
+	}
+}
+```
+
+Run: `go test ./cmd/... -run 'TestRunUnload' -v`
+Expected: PASS (all 11 subtests)
+
+Commit:
+
+```bash
+git add cmd/unload.go cmd/unload_test.go internal/lmstudio/errors.go internal/lmstudio/client.go internal/lmstudio/client_test.go
+git commit -m "Fix unload: reject model+--all together, skip already-unloaded instances, distinguish unknown from idle models"
 ```
 
 ---
