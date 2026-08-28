@@ -12,9 +12,10 @@ import (
 var unloadFlagAll bool
 
 var unloadCmd = &cobra.Command{
-	Use:   "unload [model]",
-	Short: "Unload a model (or all loaded models) on the remote LM Studio instance",
-	Args:  cobra.MaximumNArgs(1),
+	Use:               "unload [model]",
+	Short:             "Unload a model (or all loaded models) on the remote LM Studio instance",
+	Args:              cobra.MaximumNArgs(1),
+	ValidArgsFunction: completeModelKeysFunc(true),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		var model string
 		if len(args) == 1 {
