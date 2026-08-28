@@ -56,16 +56,19 @@ func TestRunUnload_NoModelAndNoAllReturnsError(t *testing.T) {
 	}
 }
 
-func TestRunUnload_ModelNotLoadedReturnsError(t *testing.T) {
-	fake := &lmstudiotest.Fake{ModelsResponse: modelsWithLoaded()}
+func TestRunUnload_DownloadedButIdleModelReturnsErrModelNotLoaded(t *testing.T) {
+	fake := &lmstudiotest.Fake{ModelsResponse: &lmstudio.ModelsResponse{Models: []lmstudio.Model{
+		{Key: "idle/model"}, // downloaded, no loaded instances
+	}}}
 	cmd := &cobra.Command{}
 	cmd.SetOut(&bytes.Buffer{})
 
-	err := runUnload(cmd, fake, "not/loaded", false)
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	err := runUnload(cmd, fake, "idle/model", false)
+	var notLoaded *lmstudio.ErrModelNotLoaded
+	if !errors.As(err, &notLoaded) {
+		t.Fatalf("err = %v, want *lmstudio.ErrModelNotLoaded", err)
 	}
-	if !strings.Contains(err.Error(), "not/loaded") {
+	if !strings.Contains(err.Error(), "idle/model") {
 		t.Errorf("err = %v, want it to mention the model", err)
 	}
 }
