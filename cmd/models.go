@@ -25,8 +25,8 @@ var modelsCmd = &cobra.Command{
 }
 
 type modelRow struct {
-	key, size, quant, state string
-	loaded                  bool
+	key, size, quant string
+	loaded           bool
 }
 
 func runModels(cmd *cobra.Command, client lmstudio.Client, jsonOut bool) error {
@@ -49,12 +49,7 @@ func runModels(cmd *cobra.Command, client lmstudio.Client, jsonOut bool) error {
 		if m.Quantization != nil {
 			quant = m.Quantization.Name
 		}
-		loaded := len(m.LoadedInstances) > 0
-		state := "not-loaded"
-		if loaded {
-			state = "loaded"
-		}
-		rows = append(rows, modelRow{key: m.Key, size: formatBytes(m.SizeBytes), quant: quant, state: state, loaded: loaded})
+		rows = append(rows, modelRow{key: m.Key, size: formatBytes(m.SizeBytes), quant: quant, loaded: len(m.LoadedInstances) > 0})
 	}
 
 	const headerKey, headerSize, headerQuant, headerState = "KEY", "SIZE", "QUANTIZATION", "STATE"
@@ -79,14 +74,14 @@ func runModels(cmd *cobra.Command, client lmstudio.Client, jsonOut bool) error {
 	fmt.Fprintln(w, header)
 
 	for _, r := range rows {
-		stateStyle := palette.Dim
+		state, stateStyle := "not-loaded", palette.Dim
 		if r.loaded {
-			stateStyle = palette.Green
+			state, stateStyle = "loaded", palette.Green
 		}
 		line := output.PadRight(r.key, keyW, palette.Cyan) + "  " +
 			output.PadRight(r.size, sizeW, palette.Yellow) + "  " +
 			output.PadRight(r.quant, quantW, palette.Dim) + "  " +
-			stateStyle(r.state)
+			stateStyle(state)
 		fmt.Fprintln(w, line)
 	}
 	return nil
