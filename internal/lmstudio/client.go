@@ -40,9 +40,10 @@ func NewHTTPClient(host, token string) *HTTPClient {
 	}
 }
 
-// maxErrorBodyBytes caps how much of a response body we read, so a
-// misdirected --host (a stray web server, a captive portal) can't dump an
-// arbitrarily large page into the terminal via an error message.
+// maxErrorBodyBytes caps how much of a non-2xx response body we read when
+// building an error message, so a misdirected --host (a stray web server, a
+// captive portal) can't dump an arbitrarily large page into the terminal.
+// Successful (2xx) responses are decoded directly and are not capped.
 const maxErrorBodyBytes = 4096
 
 // httpStatusError wraps a non-2xx response that do() itself doesn't turn
@@ -82,20 +83,19 @@ func (c *HTTPClient) do(ctx context.Context, method, path string, body, out any)
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
-	if err != nil {
-		return fmt.Errorf("reading response body: %w", err)
-	}
-
-	switch {
-	case resp.StatusCode == http.StatusUnauthorized:
+	if resp.StatusCode == http.StatusUnauthorized {
 		return &ErrUnauthorized{}
-	case resp.StatusCode < 200 || resp.StatusCode >= 300:
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+		if err != nil {
+			return fmt.Errorf("reading response body: %w", err)
+		}
 		return &httpStatusError{StatusCode: resp.StatusCode, Body: string(respBody)}
 	}
 
 	if out != nil {
-		if err := json.Unmarshal(respBody, out); err != nil {
+		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
 			return fmt.Errorf("parsing response body: %w", err)
 		}
 	}
