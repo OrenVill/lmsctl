@@ -1313,7 +1313,12 @@ func TestNewTable_AlignsColumns(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("got %d lines, want 2: %q", len(lines), buf.String())
 	}
-	if len(lines[0]) != len(lines[1]) {
+	// Equal line length is a poor proxy for "aligned" (text/tabwriter doesn't
+	// pad an untabbed last cell, so it isn't achievable here anyway, and
+	// achieving it via a wrapper adds trailing whitespace to every row plus
+	// edge cases for tab-free lines). Check what "aligned" actually means:
+	// the second column starts at the same offset on both lines.
+	if strings.Index(lines[0], "BB") != strings.Index(lines[1], "D") {
 		t.Errorf("columns not aligned: %q vs %q", lines[0], lines[1])
 	}
 }
