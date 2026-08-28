@@ -2540,8 +2540,15 @@ lmsctl unload --all                    # unload everything loaded
 lmsctl config show                     # see effective config (token redacted)
 ```
 
-Add `--json` to any command for machine-readable output.
+Add `--json` to `status`, `models`, or `load` for machine-readable output.
+(`unload` and `config` are plain-text only — as built, they have no output
+that benefits from a JSON form; the `--json` global flag is silently a
+no-op on those two.)
 ```
+
+(README updated to match what was actually built — `unload`/`config` never
+gained `--json` support, since Task 15's design never called `output.JSON`
+and Task 10's `config` commands don't check `flagJSON` either.)
 
 - [ ] **Step 4: Manual smoke test against your real remote LM Studio**
 
