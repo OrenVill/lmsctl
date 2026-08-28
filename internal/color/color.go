@@ -6,6 +6,9 @@ import "os"
 
 // Palette applies ANSI styling when Enabled is true, and is a no-op
 // otherwise (so callers can use it unconditionally without branching).
+// Each method appends a full reset, so never pass one method's output into
+// another's input (p.Dim(p.Cyan(s)) cancels the dim mid-string) -- build
+// multi-colored lines from sibling calls instead.
 type Palette struct {
 	Enabled bool
 }
