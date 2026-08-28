@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"lmsctl/internal/color"
 	"lmsctl/internal/config"
 	"lmsctl/internal/lmstudio"
 )
@@ -14,6 +15,11 @@ var (
 	flagHost  string
 	flagToken string
 )
+
+// palette is used by commands to style human-readable output. It's
+// disabled automatically when stdout isn't a terminal or NO_COLOR is set,
+// so it's safe to call unconditionally.
+var palette = color.New(os.Stdout)
 
 var rootCmd = &cobra.Command{
 	Use:           "lmsctl",
