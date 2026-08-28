@@ -10,12 +10,6 @@ import (
 	"lmsctl/internal/output"
 )
 
-var (
-	loadFlagContextLength int
-	loadFlagFlashAttn     bool
-	loadFlagOffloadKV     bool
-)
-
 var loadCmd = &cobra.Command{
 	Use:   "load <model>",
 	Short: "Load a model on the remote LM Studio instance",
@@ -25,7 +19,8 @@ var loadCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		return runLoad(cmd, client, args[0], flagJSON)
+		jsonOut, _ := cmd.Flags().GetBool("json")
+		return runLoad(cmd, client, args[0], jsonOut)
 	},
 }
 
@@ -66,8 +61,9 @@ func runLoad(cmd *cobra.Command, client lmstudio.Client, model string, jsonOut b
 }
 
 func init() {
-	loadCmd.Flags().IntVar(&loadFlagContextLength, "context-length", 0, "context length to load the model with")
-	loadCmd.Flags().BoolVar(&loadFlagFlashAttn, "flash-attention", false, "enable flash attention (llama.cpp models only)")
-	loadCmd.Flags().BoolVar(&loadFlagOffloadKV, "offload-kv-cache-to-gpu", false, "offload the KV cache to GPU (llama.cpp models only)")
+	loadCmd.Flags().Int("context-length", 0, "context length to load the model with")
+	loadCmd.Flags().Bool("flash-attention", false, "enable flash attention (llama.cpp models only)")
+	loadCmd.Flags().Bool("offload-kv-cache-to-gpu", false, "offload the KV cache to GPU (llama.cpp models only)")
+	loadCmd.Flags().Bool("json", false, "output machine-readable JSON")
 	rootCmd.AddCommand(loadCmd)
 }

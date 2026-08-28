@@ -16,13 +16,19 @@ var unloadCmd = &cobra.Command{
 	Short: "Unload a model (or all loaded models) on the remote LM Studio instance",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client, _, err := newClient()
-		if err != nil {
-			return err
-		}
 		var model string
 		if len(args) == 1 {
 			model = args[0]
+		}
+		if unloadFlagAll && model != "" {
+			return errors.New("pass either a model or --all, not both")
+		}
+		if !unloadFlagAll && model == "" {
+			return errors.New("specify a model to unload or pass --all")
+		}
+		client, _, err := newClient()
+		if err != nil {
+			return err
 		}
 		return runUnload(cmd, client, model, unloadFlagAll)
 	},
