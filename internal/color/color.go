@@ -49,8 +49,9 @@ func (p Palette) Bold(s string) string { return p.wrap("\033[1m", s) }
 // model key, instance ID, or host).
 func (p Palette) Cyan(s string) string { return p.wrap("\033[36m", s) }
 
-// Yellow styles s as a secondary/quantitative value (a size, a
-// quantization name).
+// Yellow styles s as a secondary/quantitative value (a size, a count, a
+// context length). Quantization names are Dim, not Yellow -- they're
+// descriptive metadata rather than a number to compare across models.
 func (p Palette) Yellow(s string) string { return p.wrap("\033[33m", s) }
 
 // Red styles s as an error.

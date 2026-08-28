@@ -1290,3 +1290,33 @@ git commit -m "Document lmsctl info and automatic color detection in README"
 - **Spec coverage:** `lmsctl info` → Task 9; new palette colors → Task 1; `PadRight` → Task 2; `models` table color-safe alignment → Task 3; labels/identifiers colored across `status`/`load`/`unload`/`config` → Tasks 4-7; error coloring → Task 8; README update → Task 10.
 - **Nesting hazard called out explicitly** in Task 4 (the first task that composes multiple colors in one line) and referenced again in Task 6 where it determines a deliberate non-obvious choice (why the "already unloaded" line stays a single `Dim(...)` wrap instead of also coloring the instance ID).
 - **Out of scope confirmed:** no live/interactive tokens-per-second session — that's a separate, not-yet-designed sub-project per the spec.
+
+## Final follow-up-plan review fixes (post-Task 10)
+
+A holistic review across this whole follow-up plan (Tasks 1-10 combined)
+found three cross-cutting issues, applied directly after Task 10:
+
+1. **Quantization was colored three inconsistent ways**: the `Yellow` doc
+   comment listed "a quantization name" as an example, `models.go` already
+   rendered it `Dim`, and `info.go` rendered it plain. Standardized on
+   `Dim` everywhere (de-emphasis reads well next to a `Yellow` Size line)
+   and corrected the `Yellow` doc comment to stop claiming it.
+2. **`fieldValue`'s color dispatch was stringly-typed and untested**: Cyan
+   was selected by matching `f.label == "Key" || f.label == "Instance"`,
+   which silently breaks if a label is ever renamed. Replaced `yellow bool`
+   with `style func(string) string` (nil = plain) — the same idiom
+   `PadRight` itself uses, so `info.go` no longer reintroduces the class of
+   bug `PadRight`'s signature was redesigned mid-plan to eliminate.
+3. **`output.NewTable`/`text/tabwriter` was dead code that doubled as a
+   footgun**: Task 2's note that "removing it isn't part of this change"
+   was reasonable mid-plan, but by Task 10 every table `lmsctl` prints is
+   colored, and `NewTable` cannot be combined with color (it measures raw
+   byte length). Kept in place, it was the one helper a future contributor
+   would reach for and get burned by. Deleted `NewTable` and its test;
+   `PadRight` covers the same ground safely.
+
+Also added `ParamsString` to `info`'s human-readable output (it was already
+in `info --json` but silently missing from the text view, an internal spec
+ambiguity resolved by accident during Task 9), and documented on
+`fieldValue` why boolean instance-config values (Flash attention, Offload
+KV to GPU) are deliberately left plain rather than Green/Dim.

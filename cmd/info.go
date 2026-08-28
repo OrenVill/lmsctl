@@ -24,12 +24,14 @@ var infoCmd = &cobra.Command{
 	},
 }
 
-// fieldValue is one "Label: value" line in runInfo's output. yellow marks
-// values that are quantitative (sizes, counts, context lengths) rather
-// than free text (publisher, architecture, format).
+// fieldValue is one "Label: value" line in runInfo's output. style is the
+// Palette method (e.g. palette.Cyan) to apply to value, or nil to leave it
+// plain -- boolean config values (Flash attention, Offload KV to GPU) are
+// deliberately plain rather than Green/Dim, since they're configuration,
+// not a liveness state like the models table's STATE column.
 type fieldValue struct {
 	label, value string
-	yellow       bool
+	style        func(string) string
 }
 
 func runInfo(cmd *cobra.Command, client lmstudio.Client, model string, jsonOut bool) error {
@@ -61,14 +63,15 @@ func runInfo(cmd *cobra.Command, client lmstudio.Client, model string, jsonOut b
 	}
 
 	printFields(w, []fieldValue{
-		{"Key", match.Key, false},
-		{"Publisher", match.Publisher, false},
-		{"Display name", match.DisplayName, false},
-		{"Architecture", derefOr(match.Architecture, "-"), false},
-		{"Format", derefOr(match.Format, "-"), false},
-		{"Quantization", quant, false},
-		{"Size", formatBytes(match.SizeBytes), true},
-		{"Max context", fmt.Sprintf("%d", match.MaxContextLength), true},
+		{"Key", match.Key, palette.Cyan},
+		{"Publisher", match.Publisher, nil},
+		{"Display name", match.DisplayName, nil},
+		{"Architecture", derefOr(match.Architecture, "-"), nil},
+		{"Format", derefOr(match.Format, "-"), nil},
+		{"Parameters", derefOr(match.ParamsString, "-"), nil},
+		{"Quantization", quant, palette.Dim},
+		{"Size", formatBytes(match.SizeBytes), palette.Yellow},
+		{"Max context", fmt.Sprintf("%d", match.MaxContextLength), palette.Yellow},
 	})
 
 	fmt.Fprintln(w)
@@ -80,15 +83,15 @@ func runInfo(cmd *cobra.Command, client lmstudio.Client, model string, jsonOut b
 	for _, inst := range match.LoadedInstances {
 		fmt.Fprintln(w)
 		fields := []fieldValue{
-			{"Instance", inst.ID, false},
-			{"Context length", fmt.Sprintf("%d", inst.Config.ContextLength), true},
-			{"Flash attention", fmt.Sprintf("%t", inst.Config.FlashAttention), false},
-			{"Offload KV to GPU", fmt.Sprintf("%t", inst.Config.OffloadKVCacheToGPU), false},
-			{"Parallel", fmt.Sprintf("%d", inst.Config.Parallel), true},
-			{"Eval batch size", fmt.Sprintf("%d", inst.Config.EvalBatchSize), true},
+			{"Instance", inst.ID, palette.Cyan},
+			{"Context length", fmt.Sprintf("%d", inst.Config.ContextLength), palette.Yellow},
+			{"Flash attention", fmt.Sprintf("%t", inst.Config.FlashAttention), nil},
+			{"Offload KV to GPU", fmt.Sprintf("%t", inst.Config.OffloadKVCacheToGPU), nil},
+			{"Parallel", fmt.Sprintf("%d", inst.Config.Parallel), palette.Yellow},
+			{"Eval batch size", fmt.Sprintf("%d", inst.Config.EvalBatchSize), palette.Yellow},
 		}
 		if inst.Config.NumExperts != 0 {
-			fields = append(fields, fieldValue{"Num experts", fmt.Sprintf("%d", inst.Config.NumExperts), true})
+			fields = append(fields, fieldValue{"Num experts", fmt.Sprintf("%d", inst.Config.NumExperts), palette.Yellow})
 		}
 		printFields(w, fields)
 	}
@@ -96,9 +99,8 @@ func runInfo(cmd *cobra.Command, client lmstudio.Client, model string, jsonOut b
 }
 
 // printFields prints label-aligned "Label: value" lines: labels are
-// right-padded to the widest label in fields and bolded; "Key"/"Instance"
-// values are colored cyan (they're identifiers), quantitative values
-// yellow, everything else plain.
+// right-padded to the widest label in fields and bolded; each value is
+// styled by its own fieldValue.style (nil leaves it plain).
 func printFields(w io.Writer, fields []fieldValue) {
 	width := 0
 	for _, f := range fields {
@@ -109,11 +111,8 @@ func printFields(w io.Writer, fields []fieldValue) {
 	for _, f := range fields {
 		label := f.label + ":"
 		value := f.value
-		switch {
-		case f.label == "Key" || f.label == "Instance":
-			value = palette.Cyan(value)
-		case f.yellow:
-			value = palette.Yellow(value)
+		if f.style != nil {
+			value = f.style(value)
 		}
 		fmt.Fprintln(w, output.PadRight(label, width, palette.Bold)+" "+value)
 	}
