@@ -1816,7 +1816,7 @@ func TestRunLoad_SendsModelAndReportsInstanceID(t *testing.T) {
 	out := &bytes.Buffer{}
 	cmd.SetOut(out)
 
-	if err := runLoad(cmd, fake, "openai/gpt-oss-20b"); err != nil {
+	if err := runLoad(cmd, fake, "openai/gpt-oss-20b", false); err != nil {
 		t.Fatalf("runLoad: %v", err)
 	}
 	if len(fake.LoadModelRequests) != 1 || fake.LoadModelRequests[0].Model != "openai/gpt-oss-20b" {
@@ -1832,15 +1832,12 @@ func TestRunLoad_PropagatesModelNotFound(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetOut(&bytes.Buffer{})
 
-	if err := runLoad(cmd, fake, "nope"); err == nil {
+	if err := runLoad(cmd, fake, "nope", false); err == nil {
 		t.Fatal("expected error, got nil")
 	}
 }
 
 func TestRunLoad_JSONOutput(t *testing.T) {
-	flagJSON = true
-	defer func() { flagJSON = false }()
-
 	fake := &lmstudiotest.Fake{
 		LoadModelResponse: &lmstudio.LoadModelResponse{InstanceID: "inst-1"},
 	}
@@ -1848,7 +1845,7 @@ func TestRunLoad_JSONOutput(t *testing.T) {
 	out := &bytes.Buffer{}
 	cmd.SetOut(out)
 
-	if err := runLoad(cmd, fake, "openai/gpt-oss-20b"); err != nil {
+	if err := runLoad(cmd, fake, "openai/gpt-oss-20b", true); err != nil {
 		t.Fatalf("runLoad: %v", err)
 	}
 	if !strings.Contains(out.String(), `"instance_id": "inst-1"`) {
@@ -1856,6 +1853,11 @@ func TestRunLoad_JSONOutput(t *testing.T) {
 	}
 }
 ```
+
+`runLoad` takes `jsonOut bool` as an explicit parameter, following the
+convention established when Tasks 12-13 were revised after review (a pure
+function of its arguments, no test needing to mutate/restore the `flagJSON`
+global) — this task uses that convention from the start.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -1891,11 +1893,11 @@ var loadCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		return runLoad(cmd, client, args[0])
+		return runLoad(cmd, client, args[0], flagJSON)
 	},
 }
 
-func runLoad(cmd *cobra.Command, client lmstudio.Client, model string) error {
+func runLoad(cmd *cobra.Command, client lmstudio.Client, model string, jsonOut bool) error {
 	req := lmstudio.LoadModelRequest{Model: model}
 	if cmd.Flags().Changed("context-length") {
 		v := loadFlagContextLength
@@ -1915,7 +1917,7 @@ func runLoad(cmd *cobra.Command, client lmstudio.Client, model string) error {
 		return err
 	}
 
-	if flagJSON {
+	if jsonOut {
 		return output.JSON(cmd.OutOrStdout(), resp)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Loaded %s as instance %s (%.1fs)\n", model, resp.InstanceID, resp.LoadTimeSeconds)
