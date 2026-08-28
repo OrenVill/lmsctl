@@ -2,6 +2,7 @@ package lmstudio
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -115,5 +116,50 @@ func TestListModels_MalformedJSONReturnsError(t *testing.T) {
 	_, err := c.ListModels(context.Background())
 	if err == nil {
 		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestLoadModel_SendsCorrectBodyAndParsesInstanceID(t *testing.T) {
+	var gotBody LoadModelRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/models/load" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Write([]byte(`{"type":"llm","instance_id":"inst-1","status":"loaded","load_time_seconds":1.5}`))
+	}))
+	defer srv.Close()
+
+	contextLength := 8192
+	c := NewHTTPClient(strings.TrimPrefix(srv.URL, "http://"), "")
+	got, err := c.LoadModel(context.Background(), LoadModelRequest{
+		Model:         "openai/gpt-oss-20b",
+		ContextLength: &contextLength,
+	})
+	if err != nil {
+		t.Fatalf("LoadModel: %v", err)
+	}
+	if got.InstanceID != "inst-1" {
+		t.Errorf("InstanceID = %q, want %q", got.InstanceID, "inst-1")
+	}
+	if gotBody.Model != "openai/gpt-oss-20b" || gotBody.ContextLength == nil || *gotBody.ContextLength != 8192 {
+		t.Errorf("unexpected request body: %+v", gotBody)
+	}
+}
+
+func TestLoadModel_404ReturnsErrModelNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(strings.TrimPrefix(srv.URL, "http://"), "")
+	_, err := c.LoadModel(context.Background(), LoadModelRequest{Model: "nonexistent/model"})
+	var notFound *ErrModelNotFound
+	if !errors.As(err, &notFound) {
+		t.Fatalf("err = %v, want *ErrModelNotFound", err)
+	}
+	if notFound.Model != "nonexistent/model" {
+		t.Errorf("Model = %q, want %q", notFound.Model, "nonexistent/model")
 	}
 }
