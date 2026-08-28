@@ -94,33 +94,54 @@ git commit -m "Add Cyan/Yellow/Red to internal/color.Palette"
 
 Append to `internal/output/output_test.go`:
 
+`PadRight` takes the plain string plus a *styling function* (e.g.
+`palette.Cyan`, which has exactly the right `func(string) string` shape as
+a method value) rather than taking the plain text and the already-colored
+text as two separate strings. The original two-string design was reviewed
+and rejected: it requires every caller to keep two arguments in sync by
+hand (`PadRight(r.key, palette.Cyan(r.key), keyW)`), and a mismatch (e.g.
+accidentally styling the wrong field) is invisible in tests, since `go
+test` always runs with color disabled — the bug would only be visible to a
+real user with color enabled, as a few misplaced spaces. Taking a styling
+function instead makes that class of mistake impossible: there's only one
+string to get right, and the styling is applied to it directly.
+
 ```go
-func TestPadRight_PadsUsingPlainLengthNotColoredLength(t *testing.T) {
-	// "colored" simulates an ANSI-wrapped string that's longer in bytes
-	// than the plain text it wraps -- PadRight must pad based on plain's
-	// length, not colored's, or alignment breaks when color is enabled.
-	got := PadRight("ab", "\033[36mab\033[0m", 5)
+func TestPadRight_PadsToWidthAfterApplyingStyle(t *testing.T) {
+	got := PadRight("ab", 5, func(s string) string { return "\033[36m" + s + "\033[0m" })
 	want := "\033[36mab\033[0m   "
 	if got != want {
 		t.Errorf("PadRight = %q, want %q", got, want)
 	}
 }
 
-func TestPadRight_NoPaddingWhenPlainAlreadyMeetsWidth(t *testing.T) {
-	got := PadRight("hello", "hello", 3)
+func TestPadRight_NoPaddingWhenAlreadyAtOrOverWidth(t *testing.T) {
+	got := PadRight("hello", 3, func(s string) string { return s })
 	if got != "hello" {
 		t.Errorf("PadRight = %q, want %q (no padding, and no truncation)", got, "hello")
 	}
 }
 
-func TestPadRight_PlainAndColoredCanDiffer(t *testing.T) {
-	// The common real usage: colored is plain wrapped in ANSI codes, but
-	// PadRight doesn't require that relationship -- it trusts plain's
-	// length and appends colored verbatim.
-	got := PadRight("KEY", "COLORED-KEY", 6)
-	want := "COLORED-KEY   "
-	if got != want {
-		t.Errorf("PadRight = %q, want %q", got, want)
+func TestPadRight_ZeroAndNegativeWidthReturnStyledUnpadded(t *testing.T) {
+	for _, width := range []int{0, -3} {
+		got := PadRight("ab", width, func(s string) string { return s })
+		if got != "ab" {
+			t.Errorf("PadRight(%q, %d, ...) = %q, want %q", "ab", width, got, "ab")
+		}
+	}
+}
+
+func TestPadRight_EmptyStringPadsToFullWidth(t *testing.T) {
+	got := PadRight("", 5, func(s string) string { return s })
+	if got != "     " {
+		t.Errorf("PadRight = %q, want 5 spaces", got)
+	}
+}
+
+func TestPadRight_IdentityStyleIsANoOp(t *testing.T) {
+	got := PadRight("KEY", 6, func(s string) string { return s })
+	if got != "KEY   " {
+		t.Errorf("PadRight = %q, want %q", got, "KEY   ")
 	}
 }
 ```
@@ -164,22 +185,25 @@ import (
 Append this function at the end of the file:
 
 ```go
-// PadRight returns colored, right-padded with spaces so the total VISIBLE
-// width -- measured from plain, before any color codes were added -- is at
-// least width. Safe to use with ANSI-colored strings, since padding is
-// computed from the pre-color length, not len(colored).
-func PadRight(plain, colored string, width int) string {
-	if n := width - len(plain); n > 0 {
-		return colored + strings.Repeat(" ", n)
+// PadRight applies style to s and right-pads with spaces so the total
+// VISIBLE width -- measured from s's byte length before styling -- is at
+// least width. Assumes single-width characters (true for lmsctl's ASCII
+// model keys, sizes, and quantization names); a multi-byte value would
+// under-pad rather than corrupt anything. Callers computing column widths
+// must also use len() on the plain string, to match.
+func PadRight(s string, width int, style func(string) string) string {
+	styled := style(s)
+	if n := width - len(s); n > 0 {
+		return styled + strings.Repeat(" ", n)
 	}
-	return colored
+	return styled
 }
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `go test ./internal/output/... -v`
-Expected: PASS (all 5 tests: the 2 from before plus these 3)
+Expected: PASS (all 7 tests: the 2 from before plus these 5)
 
 - [ ] **Step 5: Commit**
 
@@ -401,21 +425,21 @@ func runModels(cmd *cobra.Command, client lmstudio.Client, jsonOut bool) error {
 	}
 
 	w := cmd.OutOrStdout()
-	header := output.PadRight(headerKey, palette.Bold(headerKey), keyW) + "  " +
-		output.PadRight(headerSize, palette.Bold(headerSize), sizeW) + "  " +
-		output.PadRight(headerQuant, palette.Bold(headerQuant), quantW) + "  " +
+	header := output.PadRight(headerKey, keyW, palette.Bold) + "  " +
+		output.PadRight(headerSize, sizeW, palette.Bold) + "  " +
+		output.PadRight(headerQuant, quantW, palette.Bold) + "  " +
 		palette.Bold(headerState)
 	fmt.Fprintln(w, header)
 
 	for _, r := range rows {
-		state := palette.Dim(r.state)
+		stateStyle := palette.Dim
 		if r.loaded {
-			state = palette.Green(r.state)
+			stateStyle = palette.Green
 		}
-		line := output.PadRight(r.key, palette.Cyan(r.key), keyW) + "  " +
-			output.PadRight(r.size, palette.Yellow(r.size), sizeW) + "  " +
-			output.PadRight(r.quant, palette.Dim(r.quant), quantW) + "  " +
-			state
+		line := output.PadRight(r.key, keyW, palette.Cyan) + "  " +
+			output.PadRight(r.size, sizeW, palette.Yellow) + "  " +
+			output.PadRight(r.quant, quantW, palette.Dim) + "  " +
+			stateStyle(r.state)
 		fmt.Fprintln(w, line)
 	}
 	return nil
@@ -979,7 +1003,7 @@ func printFields(w io.Writer, fields []fieldValue) {
 		case f.yellow:
 			value = palette.Yellow(value)
 		}
-		fmt.Fprintln(w, output.PadRight(label, palette.Bold(label), width)+" "+value)
+		fmt.Fprintln(w, output.PadRight(label, width, palette.Bold)+" "+value)
 	}
 }
 
