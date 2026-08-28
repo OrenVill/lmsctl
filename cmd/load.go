@@ -11,9 +11,10 @@ import (
 )
 
 var loadCmd = &cobra.Command{
-	Use:   "load <model>",
-	Short: "Load a model on the remote LM Studio instance",
-	Args:  cobra.ExactArgs(1),
+	Use:               "load <model>",
+	Short:             "Load a model on the remote LM Studio instance",
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: completeModelKeysFunc(false),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		client, _, err := newClient()
 		if err != nil {

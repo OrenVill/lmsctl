@@ -11,9 +11,10 @@ import (
 )
 
 var infoCmd = &cobra.Command{
-	Use:   "info <model>",
-	Short: "Show details for one downloaded model",
-	Args:  cobra.ExactArgs(1),
+	Use:               "info <model>",
+	Short:             "Show details for one downloaded model",
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: completeModelKeysFunc(false),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		client, _, err := newClient()
 		if err != nil {
