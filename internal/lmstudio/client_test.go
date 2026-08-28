@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -205,5 +206,37 @@ func TestUnloadModel_404ReturnsErrInstanceNotFound(t *testing.T) {
 	var wrongType *ErrModelNotFound
 	if errors.As(err, &wrongType) {
 		t.Fatalf("err = %v, should not be *ErrModelNotFound", err)
+	}
+}
+
+func TestListModels_LargeResponseIsNotTruncated(t *testing.T) {
+	// Build a response body larger than maxErrorBodyBytes (4096) to prove
+	// success responses aren't capped the way error responses are.
+	var sb strings.Builder
+	sb.WriteString(`{"models":[`)
+	for i := 0; i < 60; i++ {
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		fmt.Fprintf(&sb, `{"type":"llm","key":"model/number-%d","display_name":"Model %d","loaded_instances":[]}`, i, i)
+	}
+	sb.WriteString(`]}`)
+	body := sb.String()
+	if len(body) <= maxErrorBodyBytes {
+		t.Fatalf("test fixture body is %d bytes, want > %d to actually exercise the no-cap path", len(body), maxErrorBodyBytes)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(strings.TrimPrefix(srv.URL, "http://"), "")
+	got, err := c.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	if len(got.Models) != 60 {
+		t.Errorf("len(Models) = %d, want 60 (response should not be truncated)", len(got.Models))
 	}
 }
