@@ -171,3 +171,17 @@ func TestPath_FallsBackToHomeConfigWhenXDGUnset(t *testing.T) {
 		t.Errorf("Path() = %q, want %q", path, want)
 	}
 }
+
+func TestEffectiveDisplay_ResolvesAcrossSourcesWithoutErroring(t *testing.T) {
+	eff := EffectiveDisplay("flag-host:1234", "", "env-host:1234", "", Config{Host: "file-host:1234"})
+	if eff.Host != "flag-host:1234" {
+		t.Errorf("Host = %q, want %q", eff.Host, "flag-host:1234")
+	}
+}
+
+func TestEffectiveDisplay_EmptyWhenNothingConfiguredNoError(t *testing.T) {
+	eff := EffectiveDisplay("", "", "", "", Config{})
+	if eff.Host != "" || eff.Token != "" {
+		t.Errorf("eff = %+v, want zero value", eff)
+	}
+}

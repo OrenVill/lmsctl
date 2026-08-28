@@ -92,3 +92,42 @@ func TestConfigShow_ReportsTokenNotSetWhenAbsent(t *testing.T) {
 		t.Errorf("output = %q, want it to report the token as (not set)", out.String())
 	}
 }
+
+func TestConfigShow_ReflectsHostFlagOverride(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	resetRootCmd(t)
+
+	if err := config.Save(config.Config{Host: "file-host:1234"}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	out := &bytes.Buffer{}
+	rootCmd.SetOut(out)
+	rootCmd.SetArgs([]string{"--host", "flag-host:5678", "config", "show"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out.String(), "flag-host:5678") {
+		t.Errorf("output = %q, want it to show the --host override, not the file value", out.String())
+	}
+	if strings.Contains(out.String(), "file-host:1234") {
+		t.Errorf("output = %q, should not show the file's host once overridden", out.String())
+	}
+}
+
+func TestConfigShow_ShowsNotSetWhenNoHostConfigured(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	resetRootCmd(t)
+
+	out := &bytes.Buffer{}
+	rootCmd.SetOut(out)
+	rootCmd.SetArgs([]string{"config", "show"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out.String(), "host:  (not set)") {
+		t.Errorf("output = %q, want host to show (not set) when nothing is configured", out.String())
+	}
+}
