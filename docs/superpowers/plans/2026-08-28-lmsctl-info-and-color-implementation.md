@@ -861,7 +861,7 @@ func Execute() {
 
 - [ ] **Step 1: Make the edits**
 
-Add a second palette bound to stderr (errors go to stderr, which can be redirected independently of stdout — `2>&1 | less` still wants color, `2>err.log` should not write ANSI codes into a log file). Change:
+Add a second palette bound to stderr (errors go to stderr, which can be redirected independently of stdout: `lmsctl status | cat` — stdout piped, stderr left on the terminal — should still color the error, and `lmsctl status 2>err.log` should not write ANSI codes into the log file. Note `2>&1 | less` does NOT demonstrate this: that redirects stderr onto the same pipe as stdout, so both are non-terminal and color is correctly disabled either way — a code-quality review on this task verified that distinction empirically before this section was corrected). Change:
 
 ```go
 var palette = color.New(os.Stdout)
@@ -1259,6 +1259,7 @@ This can't be automated in a non-interactive shell (color auto-disables when std
 - `lmsctl status`, `lmsctl load <model>`, `lmsctl unload <model>`, `lmsctl config show`, `lmsctl info <model>` all show color.
 - `lmsctl status --host 127.0.0.1:1` (a dead port) shows the error in red.
 - Piping output (e.g. `lmsctl models | cat`) shows NO color codes (confirms auto-disable works).
+- `lmsctl status --host 127.0.0.1:1 2>err.log` (stdout still a terminal, stderr redirected to a file) — inspect `err.log` (e.g. `xxd err.log | head`) and confirm it contains NO `1b` (ESC) bytes. This is the one check that actually distinguishes `errPalette` (bound to stderr) from a bug that reused the stdout-bound `palette` for errors instead — both would pass the two checks above, but only the correct binding passes this one.
 
 - [ ] **Step 5: Commit**
 
