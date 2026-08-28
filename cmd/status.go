@@ -55,9 +55,9 @@ func runStatus(cmd *cobra.Command, client lmstudio.Client, host string, jsonOut 
 		return output.JSON(w, statusJSON{Host: host, Loaded: loaded})
 	}
 
-	fmt.Fprintf(w, "LM Studio at %s: reachable\n", host)
+	fmt.Fprintf(w, "LM Studio at %s: %s\n", host, palette.Green("reachable"))
 	if len(loaded) == 0 {
-		fmt.Fprintln(w, "No models currently loaded.")
+		fmt.Fprintln(w, palette.Dim("No models currently loaded."))
 		return nil
 	}
 	fmt.Fprintln(w, "Loaded models:")

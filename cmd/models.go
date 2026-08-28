@@ -45,10 +45,13 @@ func runModels(cmd *cobra.Command, client lmstudio.Client, jsonOut bool) error {
 		if m.Quantization != nil {
 			quant = m.Quantization.Name
 		}
-		state := "not-loaded"
+		state := palette.Dim("not-loaded")
 		if len(m.LoadedInstances) > 0 {
-			state = "loaded"
+			state = palette.Green("loaded")
 		}
+		// STATE is the last, tab-unterminated cell in this row, so
+		// tabwriter never pads it — safe to color without corrupting the
+		// KEY/SIZE/QUANTIZATION column alignment above it.
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", m.Key, formatBytes(m.SizeBytes), quant, state)
 	}
 	return tw.Flush()

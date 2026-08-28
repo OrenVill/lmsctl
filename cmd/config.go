@@ -27,7 +27,7 @@ var configSetHostCmd = &cobra.Command{
 		if err := config.Save(cfg); err != nil {
 			return err
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "Default host set to %s\n", args[0])
+		fmt.Fprintf(cmd.OutOrStdout(), "%s %s\n", palette.Green("Default host set to"), args[0])
 		return nil
 	},
 }

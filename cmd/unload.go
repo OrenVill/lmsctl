@@ -61,7 +61,7 @@ func runUnload(cmd *cobra.Command, client lmstudio.Client, model string, all boo
 
 	if len(toUnload) == 0 {
 		if all {
-			fmt.Fprintln(cmd.OutOrStdout(), "No models currently loaded.")
+			fmt.Fprintln(cmd.OutOrStdout(), palette.Dim("No models currently loaded."))
 			return nil
 		}
 		if !found {
@@ -74,12 +74,12 @@ func runUnload(cmd *cobra.Command, client lmstudio.Client, model string, all boo
 		if err := client.UnloadModel(cmd.Context(), id); err != nil {
 			var notFound *lmstudio.ErrInstanceNotFound
 			if errors.As(err, &notFound) {
-				fmt.Fprintf(cmd.OutOrStdout(), "Instance %s was already unloaded\n", id)
+				fmt.Fprintln(cmd.OutOrStdout(), palette.Dim(fmt.Sprintf("Instance %s was already unloaded", id)))
 				continue
 			}
 			return err
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "Unloaded instance %s\n", id)
+		fmt.Fprintf(cmd.OutOrStdout(), "%s instance %s\n", palette.Green("Unloaded"), id)
 	}
 	return nil
 }
