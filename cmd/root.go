@@ -19,6 +19,11 @@ var (
 // palette is used by commands to style human-readable output. It's
 // disabled automatically when stdout isn't a terminal or NO_COLOR is set,
 // so it's safe to call unconditionally.
+//
+// errPalette is a separate instance bound to stderr, not stdout, so error
+// color tracks fd 2 independently: `lmsctl status 2>err.log` stays plain
+// even when stdout is a terminal, and `lmsctl status | cat` still colors
+// the error on the terminal when stderr is left connected to it.
 var (
 	palette    = color.New(os.Stdout)
 	errPalette = color.New(os.Stderr)
