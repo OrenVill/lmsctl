@@ -79,7 +79,7 @@ func runUnload(cmd *cobra.Command, client lmstudio.Client, model string, all boo
 			}
 			return err
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "%s instance %s\n", palette.Green("Unloaded"), id)
+		fmt.Fprintf(cmd.OutOrStdout(), "%s instance %s\n", palette.Green("Unloaded"), palette.Cyan(id))
 	}
 	return nil
 }
