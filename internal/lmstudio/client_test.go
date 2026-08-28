@@ -87,3 +87,33 @@ func TestListModels_401ReturnsErrUnauthorized(t *testing.T) {
 		t.Fatalf("err = %v, want *ErrUnauthorized", err)
 	}
 }
+
+func TestListModels_500ReturnsGenericHTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte("internal error"))
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(strings.TrimPrefix(srv.URL, "http://"), "")
+	_, err := c.ListModels(context.Background())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "500") || !strings.Contains(err.Error(), "internal error") {
+		t.Errorf("err = %v, want it to mention the status code and body", err)
+	}
+}
+
+func TestListModels_MalformedJSONReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("not json"))
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(strings.TrimPrefix(srv.URL, "http://"), "")
+	_, err := c.ListModels(context.Background())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
