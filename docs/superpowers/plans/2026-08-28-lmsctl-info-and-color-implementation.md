@@ -1203,7 +1203,19 @@ Expected: usage showing `info <model>` and a `--json` flag.
 
 - [ ] **Step 3: Update `README.md`**
 
-Add `lmsctl info` to the Usage section. Find this block:
+**Read the current `README.md` first rather than trusting the "find this
+block" text below verbatim** — a code review on Task 9 found this plan
+section had drifted out of sync with the actual file (the file's `--json`
+paragraph was already corrected independently, earlier in this plan's
+history, to not claim `--json` is a silent no-op on `unload`/`config` —
+it actually errors with `unknown flag: --json` on those, since Task 8 made
+it a per-command local flag). If the file doesn't match the "find" block
+exactly, edit based on what's actually there instead of forcing a literal
+match — the intent (add `info` to the usage list and mention it under
+`--json`; add a color-detection note; leave the accurate `unload`/`config`
+wording alone) matters more than an exact diff.
+
+Find this block:
 
 ```markdown
 ## Usage
@@ -1219,9 +1231,8 @@ lmsctl config show                     # see effective config (token redacted)
 ```
 
 Add `--json` to `status`, `models`, or `load` for machine-readable output.
-(`unload` and `config` are plain-text only — as built, they have no output
-that benefits from a JSON form; the `--json` global flag is silently a
-no-op on those two.)
+(`unload` and `config` are plain-text only — there's nothing in their
+output that benefits from a JSON form.)
 ```
 
 Replace it with:
@@ -1241,21 +1252,25 @@ lmsctl config show                     # see effective config (token redacted)
 ```
 
 Add `--json` to `status`, `models`, `info`, or `load` for machine-readable
-output. (`unload` and `config` are plain-text only — as built, they have no
-output that benefits from a JSON form; the `--json` global flag is silently
-a no-op on those two.)
+output. (`unload` and `config` are plain-text only — there's nothing in
+their output that benefits from a JSON form.)
 
 Output is colored automatically when connected to a terminal, and disabled
 automatically when piped/redirected or when the `NO_COLOR` environment
 variable is set.
 ```
 
-(Note: the "silently a no-op" line about `--json` describes `unload`/`config`, which is unchanged and still accurate — `info` is simply added to the list of commands that DO support `--json`. The new paragraph about automatic color detection is new.)
+Also update the one-line project description near the top of the file
+(currently "check status, list models, and load/unload them") to mention
+the details view too, e.g. "check status, list models, view a model's
+details, and load/unload them" — Task 9 added a whole command this
+description doesn't reflect.
 
 - [ ] **Step 4: Manual color verification**
 
 This can't be automated in a non-interactive shell (color auto-disables when stdout isn't a terminal), so verify by hand: run `/tmp/lmsctl models --host <any reachable LM Studio host>` (or against a local `httptest` stub server if you don't have one handy) directly in a real terminal, and confirm:
 - The `models` table's columns (KEY cyan, SIZE yellow, QUANTIZATION dim, STATE green/dim, headers bold) are still vertically aligned.
+- `lmsctl info <model>` against a model with multiple loaded instances — each instance's "Label:" lines line up within that instance's block (this is covered by an automated test now, `TestRunInfo_ColumnsStayAlignedWithColorEnabledAndMultipleInstances`, but a quick visual look confirms the real terminal rendering matches).
 - `lmsctl status`, `lmsctl load <model>`, `lmsctl unload <model>`, `lmsctl config show`, `lmsctl info <model>` all show color.
 - `lmsctl status --host 127.0.0.1:1` (a dead port) shows the error in red.
 - Piping output (e.g. `lmsctl models | cat`) shows NO color codes (confirms auto-disable works).
