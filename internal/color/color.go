@@ -41,3 +41,14 @@ func (p Palette) Dim(s string) string { return p.wrap("\033[2m", s) }
 
 // Bold styles s for emphasis (e.g. table headers).
 func (p Palette) Bold(s string) string { return p.wrap("\033[1m", s) }
+
+// Cyan styles s as an identifier the user would reference elsewhere (a
+// model key, instance ID, or host).
+func (p Palette) Cyan(s string) string { return p.wrap("\033[36m", s) }
+
+// Yellow styles s as a secondary/quantitative value (a size, a
+// quantization name).
+func (p Palette) Yellow(s string) string { return p.wrap("\033[33m", s) }
+
+// Red styles s as an error.
+func (p Palette) Red(s string) string { return p.wrap("\033[31m", s) }
