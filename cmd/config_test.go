@@ -127,7 +127,8 @@ func TestConfigShow_ShowsNotSetWhenNoHostConfigured(t *testing.T) {
 	if err := rootCmd.Execute(); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if !strings.Contains(out.String(), "host:  ") || !strings.Contains(out.String(), "(not set)") {
-		t.Errorf("output = %q, want host to show (not set) when nothing is configured", out.String())
+	hostLine := strings.SplitN(out.String(), "\n", 2)[0]
+	if !strings.Contains(hostLine, "host:  ") || !strings.Contains(hostLine, "(not set)") {
+		t.Errorf("host line = %q, want host to show (not set) when nothing is configured", hostLine)
 	}
 }
