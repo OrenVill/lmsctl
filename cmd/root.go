@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"lmsctl/internal/color"
 	"lmsctl/internal/config"
 	"lmsctl/internal/lmstudio"
 )
@@ -13,6 +14,19 @@ import (
 var (
 	flagHost  string
 	flagToken string
+)
+
+// palette is used by commands to style human-readable output. It's
+// disabled automatically when stdout isn't a terminal or NO_COLOR is set,
+// so it's safe to call unconditionally.
+//
+// errPalette is a separate instance bound to stderr, not stdout, so error
+// color tracks fd 2 independently: `lmsctl status 2>err.log` stays plain
+// even when stdout is a terminal, and `lmsctl status | cat` still colors
+// the error on the terminal when stderr is left connected to it.
+var (
+	palette    = color.New(os.Stdout)
+	errPalette = color.New(os.Stderr)
 )
 
 var rootCmd = &cobra.Command{
@@ -25,7 +39,7 @@ var rootCmd = &cobra.Command{
 // Execute runs the root command and exits the process on error.
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, "Error:", err)
+		fmt.Fprintln(os.Stderr, errPalette.Red(fmt.Sprintf("Error: %v", err)))
 		os.Exit(1)
 	}
 }

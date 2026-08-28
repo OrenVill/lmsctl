@@ -27,7 +27,7 @@ var configSetHostCmd = &cobra.Command{
 		if err := config.Save(cfg); err != nil {
 			return err
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "Default host set to %s\n", args[0])
+		fmt.Fprintf(cmd.OutOrStdout(), "%s %s\n", palette.Green("Default host set to"), palette.Cyan(args[0]))
 		return nil
 	},
 }
@@ -50,7 +50,7 @@ var configShowCmd = &cobra.Command{
 		if eff.Token != "" {
 			token = "(set)"
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "host:  %s\ntoken: %s\n", host, token)
+		fmt.Fprintf(cmd.OutOrStdout(), "%s%s\n%s%s\n", palette.Bold("host:  "), palette.Cyan(host), palette.Bold("token: "), token)
 		return nil
 	},
 }

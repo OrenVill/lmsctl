@@ -56,7 +56,7 @@ func runLoad(cmd *cobra.Command, client lmstudio.Client, model string, jsonOut b
 	if jsonOut {
 		return output.JSON(cmd.OutOrStdout(), resp)
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "Loaded %s as instance %s (%.1fs)\n", model, resp.InstanceID, resp.LoadTimeSeconds)
+	fmt.Fprintf(cmd.OutOrStdout(), "%s %s as instance %s (%.1fs)\n", palette.Green("Loaded"), palette.Cyan(model), palette.Cyan(resp.InstanceID), resp.LoadTimeSeconds)
 	return nil
 }
 
