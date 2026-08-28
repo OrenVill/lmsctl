@@ -1,7 +1,9 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -35,7 +37,7 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
+	if errors.Is(err, fs.ErrNotExist) {
 		return Config{}, nil
 	}
 	if err != nil {
@@ -64,6 +66,9 @@ func Save(cfg Config) error {
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return fmt.Errorf("writing config file %s: %w", path, err)
 	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("setting permissions on config file %s: %w", path, err)
+	}
 	return nil
 }
 
@@ -74,7 +79,7 @@ type Effective struct {
 }
 
 // ErrNoHost is returned by Resolve when no host is configured anywhere.
-var ErrNoHost = fmt.Errorf("no host configured: run 'lmsctl config set-host <host:port>', set LMSCTL_HOST, or pass --host")
+var ErrNoHost = errors.New("no host configured: run 'lmsctl config set-host <host:port>', set LMSCTL_HOST, or pass --host")
 
 // Resolve applies the precedence flag > env var > config file to produce
 // the effective settings for one invocation. Empty strings mean "not set"
