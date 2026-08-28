@@ -2450,6 +2450,33 @@ git add cmd/unload.go cmd/unload_test.go internal/lmstudio/errors.go internal/lm
 git commit -m "Fix unload: reject model+--all together, skip already-unloaded instances, distinguish unknown from idle models"
 ```
 
+**One more coverage gap found on verification**: the original Step 1 test
+`TestRunUnload_ModelNotLoadedReturnsError` used the key `"not/loaded"`,
+which isn't in `modelsWithLoaded()` — so after this fix it silently started
+exercising the new `ErrModelNotFound` (unknown model) branch instead of the
+`ErrModelNotLoaded` (downloaded-but-idle) branch its name promised, leaving
+that branch completely unpinned (swapping the two error types in
+`unload.go` still passed the full suite). Replaced it with:
+
+```go
+func TestRunUnload_DownloadedButIdleModelReturnsErrModelNotLoaded(t *testing.T) {
+	fake := &lmstudiotest.Fake{ModelsResponse: &lmstudio.ModelsResponse{Models: []lmstudio.Model{
+		{Key: "idle/model"}, // downloaded, no loaded instances
+	}}}
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+
+	err := runUnload(cmd, fake, "idle/model", false)
+	var notLoaded *lmstudio.ErrModelNotLoaded
+	if !errors.As(err, &notLoaded) {
+		t.Fatalf("err = %v, want *lmstudio.ErrModelNotLoaded", err)
+	}
+	if !strings.Contains(err.Error(), "idle/model") {
+		t.Errorf("err = %v, want it to mention the model", err)
+	}
+}
+```
+
 ---
 
 ### Task 16: Full test suite, build, README, and manual smoke test
