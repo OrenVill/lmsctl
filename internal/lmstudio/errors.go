@@ -23,7 +23,8 @@ type ErrUnauthorized struct{}
 
 func (e *ErrUnauthorized) Error() string {
 	return "LM Studio rejected the request: missing or incorrect API token\n" +
-		"set the correct token with --token, LMSCTL_TOKEN, or 'lmsctl config set-host'"
+		"set the correct token with --token, the LMSCTL_TOKEN environment variable, " +
+		"or the \"token:\" field in ~/.config/lmsctl/config.yaml"
 }
 
 // ErrModelNotFound indicates the requested model key does not match any
@@ -43,5 +44,5 @@ type ErrModelNotLoaded struct {
 }
 
 func (e *ErrModelNotLoaded) Error() string {
-	return fmt.Sprintf("%q is not currently loaded", e.Model)
+	return fmt.Sprintf("%q is not currently loaded — run 'lmsctl status' to see what is", e.Model)
 }
