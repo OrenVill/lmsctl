@@ -1866,6 +1866,8 @@ Expected: FAIL — `runLoad`/`loadCmd` undefined.
 
 - [ ] **Step 3: Write `cmd/load.go`**
 
+Flag-to-request construction is pulled into its own function, `buildLoadRequest(fs *pflag.FlagSet, model string)`, taking a `*pflag.FlagSet` explicitly rather than reaching into `cmd.Flags()` and the package-level `loadFlag*` globals from inside `runLoad`. This is the only genuinely novel logic in this command (which flag maps to which optional field, and whether it was explicitly set), and without a seam here it's untestable without registering real cobra flags — a typo in any of the three `Changed("...")` string literals would silently disable that flag forever, with the existing 3 tests (which never touch `cmd.Flags()` at all) staying green. `buildLoadRequest` can be tested directly against a bare `pflag.FlagSet`, independent of cobra or the package-level globals.
+
 ```go
 package cmd
 
@@ -1873,6 +1875,7 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"lmsctl/internal/lmstudio"
 	"lmsctl/internal/output"
@@ -1897,20 +1900,29 @@ var loadCmd = &cobra.Command{
 	},
 }
 
-func runLoad(cmd *cobra.Command, client lmstudio.Client, model string, jsonOut bool) error {
+// buildLoadRequest builds a LoadModelRequest for model, including only the
+// optional fields whose flag was explicitly set on fs (so e.g.
+// --flash-attention=false is sent as false rather than omitted, while an
+// unset flag lets LM Studio apply its own default).
+func buildLoadRequest(fs *pflag.FlagSet, model string) lmstudio.LoadModelRequest {
 	req := lmstudio.LoadModelRequest{Model: model}
-	if cmd.Flags().Changed("context-length") {
-		v := loadFlagContextLength
+	if fs.Changed("context-length") {
+		v, _ := fs.GetInt("context-length")
 		req.ContextLength = &v
 	}
-	if cmd.Flags().Changed("flash-attention") {
-		v := loadFlagFlashAttn
+	if fs.Changed("flash-attention") {
+		v, _ := fs.GetBool("flash-attention")
 		req.FlashAttention = &v
 	}
-	if cmd.Flags().Changed("offload-kv-cache-to-gpu") {
-		v := loadFlagOffloadKV
+	if fs.Changed("offload-kv-cache-to-gpu") {
+		v, _ := fs.GetBool("offload-kv-cache-to-gpu")
 		req.OffloadKVCacheToGPU = &v
 	}
+	return req
+}
+
+func runLoad(cmd *cobra.Command, client lmstudio.Client, model string, jsonOut bool) error {
+	req := buildLoadRequest(cmd.Flags(), model)
 
 	resp, err := client.LoadModel(cmd.Context(), req)
 	if err != nil {
@@ -1932,10 +1944,52 @@ func init() {
 }
 ```
 
+Add two tests to `cmd/load_test.go` exercising `buildLoadRequest` directly against a bare `pflag.FlagSet` (add `"github.com/spf13/pflag"` to the test file's imports):
+
+```go
+func TestBuildLoadRequest_OnlyIncludesExplicitlySetFlags(t *testing.T) {
+	fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	fs.Int("context-length", 0, "")
+	fs.Bool("flash-attention", false, "")
+	fs.Bool("offload-kv-cache-to-gpu", false, "")
+	if err := fs.Parse([]string{"--context-length", "8192", "--flash-attention=false"}); err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	req := buildLoadRequest(fs, "openai/gpt-oss-20b")
+
+	if req.Model != "openai/gpt-oss-20b" {
+		t.Errorf("Model = %q, want %q", req.Model, "openai/gpt-oss-20b")
+	}
+	if req.ContextLength == nil || *req.ContextLength != 8192 {
+		t.Errorf("ContextLength = %v, want 8192", req.ContextLength)
+	}
+	if req.FlashAttention == nil || *req.FlashAttention != false {
+		t.Errorf("FlashAttention = %v, want a set false (explicitly passed)", req.FlashAttention)
+	}
+	if req.OffloadKVCacheToGPU != nil {
+		t.Errorf("OffloadKVCacheToGPU = %v, want nil (flag not passed)", req.OffloadKVCacheToGPU)
+	}
+}
+
+func TestBuildLoadRequest_NoFlagsSetOnlyIncludesModel(t *testing.T) {
+	fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	fs.Int("context-length", 0, "")
+	fs.Bool("flash-attention", false, "")
+	fs.Bool("offload-kv-cache-to-gpu", false, "")
+
+	req := buildLoadRequest(fs, "some/model")
+
+	if req.ContextLength != nil || req.FlashAttention != nil || req.OffloadKVCacheToGPU != nil {
+		t.Errorf("expected no optional fields set when no flags were passed, got %+v", req)
+	}
+}
+```
+
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `go test ./cmd/... -run 'TestRunLoad' -v`
-Expected: PASS (all 3 subtests)
+Run: `go test ./cmd/... -run 'TestRunLoad|TestBuildLoadRequest' -v`
+Expected: PASS (all 5 subtests)
 
 - [ ] **Step 5: Commit**
 
