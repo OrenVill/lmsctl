@@ -56,3 +56,29 @@ func TestNew_NonTerminalFileDisablesColor(t *testing.T) {
 		t.Error("Enabled = true, want false for a regular file (not a terminal)")
 	}
 }
+
+func TestPalette_EnabledWrapsCyanYellowRed(t *testing.T) {
+	p := Palette{Enabled: true}
+	if got, want := p.Cyan("x"), "\033[36mx\033[0m"; got != want {
+		t.Errorf("Cyan(%q) = %q, want %q", "x", got, want)
+	}
+	if got, want := p.Yellow("x"), "\033[33mx\033[0m"; got != want {
+		t.Errorf("Yellow(%q) = %q, want %q", "x", got, want)
+	}
+	if got, want := p.Red("x"), "\033[31mx\033[0m"; got != want {
+		t.Errorf("Red(%q) = %q, want %q", "x", got, want)
+	}
+}
+
+func TestPalette_DisabledReturnsPlainTextForCyanYellowRed(t *testing.T) {
+	p := Palette{Enabled: false}
+	if got := p.Cyan("x"); got != "x" {
+		t.Errorf("Cyan(%q) = %q, want unmodified %q", "x", got, "x")
+	}
+	if got := p.Yellow("x"); got != "x" {
+		t.Errorf("Yellow(%q) = %q, want unmodified %q", "x", got, "x")
+	}
+	if got := p.Red("x"); got != "x" {
+		t.Errorf("Red(%q) = %q, want unmodified %q", "x", got, "x")
+	}
+}
