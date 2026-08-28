@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"lmsctl/internal/lmstudio"
 	"lmsctl/internal/output"
@@ -28,20 +29,29 @@ var loadCmd = &cobra.Command{
 	},
 }
 
-func runLoad(cmd *cobra.Command, client lmstudio.Client, model string, jsonOut bool) error {
+// buildLoadRequest builds a LoadModelRequest for model, including only the
+// optional fields whose flag was explicitly set on fs (so e.g.
+// --flash-attention=false is sent as false rather than omitted, while an
+// unset flag lets LM Studio apply its own default).
+func buildLoadRequest(fs *pflag.FlagSet, model string) lmstudio.LoadModelRequest {
 	req := lmstudio.LoadModelRequest{Model: model}
-	if cmd.Flags().Changed("context-length") {
-		v := loadFlagContextLength
+	if fs.Changed("context-length") {
+		v, _ := fs.GetInt("context-length")
 		req.ContextLength = &v
 	}
-	if cmd.Flags().Changed("flash-attention") {
-		v := loadFlagFlashAttn
+	if fs.Changed("flash-attention") {
+		v, _ := fs.GetBool("flash-attention")
 		req.FlashAttention = &v
 	}
-	if cmd.Flags().Changed("offload-kv-cache-to-gpu") {
-		v := loadFlagOffloadKV
+	if fs.Changed("offload-kv-cache-to-gpu") {
+		v, _ := fs.GetBool("offload-kv-cache-to-gpu")
 		req.OffloadKVCacheToGPU = &v
 	}
+	return req
+}
+
+func runLoad(cmd *cobra.Command, client lmstudio.Client, model string, jsonOut bool) error {
+	req := buildLoadRequest(cmd.Flags(), model)
 
 	resp, err := client.LoadModel(cmd.Context(), req)
 	if err != nil {
