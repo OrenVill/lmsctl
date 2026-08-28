@@ -46,3 +46,15 @@ type ErrModelNotLoaded struct {
 func (e *ErrModelNotLoaded) Error() string {
 	return fmt.Sprintf("%q is not currently loaded — run 'lmsctl status' to see what is", e.Model)
 }
+
+// ErrInstanceNotFound indicates the requested model instance ID does not
+// exist on the server — most likely because it was already unloaded
+// (e.g. by LM Studio's own idle timeout, or via its UI) between when the
+// caller discovered the instance and when it tried to unload it.
+type ErrInstanceNotFound struct {
+	InstanceID string
+}
+
+func (e *ErrInstanceNotFound) Error() string {
+	return fmt.Sprintf("instance %q was not found — it may already be unloaded", e.InstanceID)
+}

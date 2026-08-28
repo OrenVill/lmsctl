@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -28,8 +29,11 @@ var unloadCmd = &cobra.Command{
 }
 
 func runUnload(cmd *cobra.Command, client lmstudio.Client, model string, all bool) error {
+	if all && model != "" {
+		return errors.New("pass either a model or --all, not both")
+	}
 	if !all && model == "" {
-		return fmt.Errorf("specify a model to unload or pass --all")
+		return errors.New("specify a model to unload or pass --all")
 	}
 
 	resp, err := client.ListModels(cmd.Context())
@@ -37,11 +41,13 @@ func runUnload(cmd *cobra.Command, client lmstudio.Client, model string, all boo
 		return err
 	}
 
+	found := false
 	var toUnload []string
 	for _, m := range resp.Models {
 		if !all && m.Key != model {
 			continue
 		}
+		found = true
 		for _, inst := range m.LoadedInstances {
 			toUnload = append(toUnload, inst.ID)
 		}
@@ -52,11 +58,19 @@ func runUnload(cmd *cobra.Command, client lmstudio.Client, model string, all boo
 			fmt.Fprintln(cmd.OutOrStdout(), "No models currently loaded.")
 			return nil
 		}
+		if !found {
+			return &lmstudio.ErrModelNotFound{Model: model}
+		}
 		return &lmstudio.ErrModelNotLoaded{Model: model}
 	}
 
 	for _, id := range toUnload {
 		if err := client.UnloadModel(cmd.Context(), id); err != nil {
+			var notFound *lmstudio.ErrInstanceNotFound
+			if errors.As(err, &notFound) {
+				fmt.Fprintf(cmd.OutOrStdout(), "Instance %s was already unloaded\n", id)
+				continue
+			}
 			return err
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "Unloaded instance %s\n", id)

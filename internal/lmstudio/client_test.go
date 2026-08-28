@@ -184,7 +184,7 @@ func TestUnloadModel_SendsInstanceID(t *testing.T) {
 	}
 }
 
-func TestUnloadModel_404ReturnsGenericErrorNotErrModelNotFound(t *testing.T) {
+func TestUnloadModel_404ReturnsErrInstanceNotFound(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
@@ -192,14 +192,18 @@ func TestUnloadModel_404ReturnsGenericErrorNotErrModelNotFound(t *testing.T) {
 
 	c := NewHTTPClient(strings.TrimPrefix(srv.URL, "http://"), "")
 	err := c.UnloadModel(context.Background(), "inst-missing")
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	var notFound *ErrInstanceNotFound
+	if !errors.As(err, &notFound) {
+		t.Fatalf("err = %v, want *ErrInstanceNotFound", err)
 	}
-	// UnloadModel deliberately does NOT map 404 to ErrModelNotFound: that
-	// error's "run 'lmsctl models'" advice is for a model key the user
-	// typed, not an instance ID this package resolved itself.
-	var notFound *ErrModelNotFound
-	if errors.As(err, &notFound) {
-		t.Fatalf("err = %v, want a generic error, not *ErrModelNotFound (instance IDs aren't model keys)", err)
+	if notFound.InstanceID != "inst-missing" {
+		t.Errorf("InstanceID = %q, want %q", notFound.InstanceID, "inst-missing")
+	}
+	// Confirm it's NOT ErrModelNotFound -- that error's advice ("run
+	// 'lmsctl models'") is for a model key the user typed, not an instance
+	// ID this package resolved itself.
+	var wrongType *ErrModelNotFound
+	if errors.As(err, &wrongType) {
+		t.Fatalf("err = %v, should not be *ErrModelNotFound", err)
 	}
 }

@@ -123,11 +123,16 @@ func (c *HTTPClient) LoadModel(ctx context.Context, req LoadModelRequest) (*Load
 }
 
 func (c *HTTPClient) UnloadModel(ctx context.Context, instanceID string) error {
-	// Deliberately does not map 404 to ErrModelNotFound: that error's message
-	// ("no downloaded model matches ... run 'lmsctl models'") is written for
-	// a model key the user typed, not an instance ID this package resolved
-	// itself via ListModels. A 404 here means the instance vanished between
-	// that list call and this one; the generic httpStatusError from do() is
-	// more honest than misdirected advice.
-	return c.do(ctx, http.MethodPost, "/api/v1/models/unload", unloadModelRequest{InstanceID: instanceID}, nil)
+	// Maps 404 to ErrInstanceNotFound rather than ErrModelNotFound: this
+	// method only ever receives instance IDs the caller resolved itself via
+	// ListModels, never a user-typed model key, so ErrModelNotFound's "run
+	// 'lmsctl models'" advice would be wrong here. A 404 means the instance
+	// is already gone — most likely already unloaded — which callers can
+	// treat as a harmless race rather than a hard failure.
+	err := c.do(ctx, http.MethodPost, "/api/v1/models/unload", unloadModelRequest{InstanceID: instanceID}, nil)
+	var statusErr *httpStatusError
+	if errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusNotFound {
+		return &ErrInstanceNotFound{InstanceID: instanceID}
+	}
+	return err
 }
