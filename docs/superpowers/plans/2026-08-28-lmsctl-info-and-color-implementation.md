@@ -808,11 +808,20 @@ Note the exact spacing inside the bold labels: `"host:  "` has two trailing spac
 	if !strings.Contains(out.String(), "host:  (not set)") {
 ```
 
-and replace it with:
+**Splitting it into two independent `Contains` checks is not enough** — a
+code review on this exact fix found that `"(not set)"` also appears on the
+line below (the token line prints the same literal when no token is
+configured), so two independent checks pass even if the HOST line's
+fallback text is mutated away from `"(not set)"` entirely, as long as the
+token line still says it. Scope both checks to just the host line (the
+first line of output) instead:
 
 ```go
-	if !strings.Contains(out.String(), "host:  ") || !strings.Contains(out.String(), "(not set)") {
+	hostLine := strings.SplitN(out.String(), "\n", 2)[0]
+	if !strings.Contains(hostLine, "host:  ") || !strings.Contains(hostLine, "(not set)") {
 ```
+
+(and update the `t.Errorf` message's variable reference from `out.String()` to `hostLine` to match)
 
 - [ ] **Step 2: Verify**
 
