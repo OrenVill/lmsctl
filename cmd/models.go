@@ -24,6 +24,11 @@ var modelsCmd = &cobra.Command{
 	},
 }
 
+type modelRow struct {
+	key, size, quant, state string
+	loaded                  bool
+}
+
 func runModels(cmd *cobra.Command, client lmstudio.Client, jsonOut bool) error {
 	resp, err := client.ListModels(cmd.Context())
 	if err != nil {
@@ -38,23 +43,53 @@ func runModels(cmd *cobra.Command, client lmstudio.Client, jsonOut bool) error {
 		return output.JSON(cmd.OutOrStdout(), models)
 	}
 
-	tw := output.NewTable(cmd.OutOrStdout())
-	fmt.Fprintln(tw, "KEY\tSIZE\tQUANTIZATION\tSTATE")
+	rows := make([]modelRow, 0, len(resp.Models))
 	for _, m := range resp.Models {
 		quant := "-"
 		if m.Quantization != nil {
 			quant = m.Quantization.Name
 		}
-		state := palette.Dim("not-loaded")
-		if len(m.LoadedInstances) > 0 {
-			state = palette.Green("loaded")
+		loaded := len(m.LoadedInstances) > 0
+		state := "not-loaded"
+		if loaded {
+			state = "loaded"
 		}
-		// STATE is the last, tab-unterminated cell in this row, so
-		// tabwriter never pads it — safe to color without corrupting the
-		// KEY/SIZE/QUANTIZATION column alignment above it.
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", m.Key, formatBytes(m.SizeBytes), quant, state)
+		rows = append(rows, modelRow{key: m.Key, size: formatBytes(m.SizeBytes), quant: quant, state: state, loaded: loaded})
 	}
-	return tw.Flush()
+
+	const headerKey, headerSize, headerQuant, headerState = "KEY", "SIZE", "QUANTIZATION", "STATE"
+	keyW, sizeW, quantW := len(headerKey), len(headerSize), len(headerQuant)
+	for _, r := range rows {
+		if len(r.key) > keyW {
+			keyW = len(r.key)
+		}
+		if len(r.size) > sizeW {
+			sizeW = len(r.size)
+		}
+		if len(r.quant) > quantW {
+			quantW = len(r.quant)
+		}
+	}
+
+	w := cmd.OutOrStdout()
+	header := output.PadRight(headerKey, keyW, palette.Bold) + "  " +
+		output.PadRight(headerSize, sizeW, palette.Bold) + "  " +
+		output.PadRight(headerQuant, quantW, palette.Bold) + "  " +
+		palette.Bold(headerState)
+	fmt.Fprintln(w, header)
+
+	for _, r := range rows {
+		stateStyle := palette.Dim
+		if r.loaded {
+			stateStyle = palette.Green
+		}
+		line := output.PadRight(r.key, keyW, palette.Cyan) + "  " +
+			output.PadRight(r.size, sizeW, palette.Yellow) + "  " +
+			output.PadRight(r.quant, quantW, palette.Dim) + "  " +
+			stateStyle(r.state)
+		fmt.Fprintln(w, line)
+	}
+	return nil
 }
 
 func formatBytes(n int64) string {

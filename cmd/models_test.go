@@ -35,6 +35,9 @@ func TestRunModels_TableOutputShowsStateAndSize(t *testing.T) {
 	}
 
 	got := out.String()
+	if !strings.Contains(got, "KEY") || !strings.Contains(got, "SIZE") || !strings.Contains(got, "QUANTIZATION") || !strings.Contains(got, "STATE") {
+		t.Errorf("output missing expected header row: %q", got)
+	}
 	if !strings.Contains(got, "openai/gpt-oss-20b") || !strings.Contains(got, "12.0GiB") || !strings.Contains(got, "loaded") {
 		t.Errorf("output missing expected loaded model row: %q", got)
 	}
