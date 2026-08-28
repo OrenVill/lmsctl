@@ -483,6 +483,134 @@ git add cmd/models.go cmd/models_test.go
 git commit -m "Replace models table's tabwriter with color-safe manual alignment"
 ```
 
+**Follow-up fix (after code review):** the review found the entire point of
+this task — that color doesn't break alignment — had no automated coverage.
+`go test` always runs with `palette.Enabled == false` (stdout is a pipe, not
+a terminal, under the test runner), so the ANSI-vs-`tabwriter` regression
+this task exists to prevent was structurally uncatchable by the suite. It
+also flagged `modelRow`'s `state string` field as redundant with `loaded
+bool` (both derived from the same check, stored separately, and `state`
+never actually participates in the width computation) — a latent
+desync risk for a future edit, worth removing while the file is open.
+
+Simplify `modelRow` in `cmd/models.go` (remove the `state` field):
+
+```go
+type modelRow struct {
+	key, size, quant string
+	loaded           bool
+}
+```
+
+Update the row-building loop to stop setting a `state` field:
+
+```go
+	rows := make([]modelRow, 0, len(resp.Models))
+	for _, m := range resp.Models {
+		quant := "-"
+		if m.Quantization != nil {
+			quant = m.Quantization.Name
+		}
+		rows = append(rows, modelRow{key: m.Key, size: formatBytes(m.SizeBytes), quant: quant, loaded: len(m.LoadedInstances) > 0})
+	}
+```
+
+Update the row-rendering loop to compute `state` inline instead of reading `r.state`:
+
+```go
+	for _, r := range rows {
+		state, stateStyle := "not-loaded", palette.Dim
+		if r.loaded {
+			state, stateStyle = "loaded", palette.Green
+		}
+		line := output.PadRight(r.key, keyW, palette.Cyan) + "  " +
+			output.PadRight(r.size, sizeW, palette.Yellow) + "  " +
+			output.PadRight(r.quant, quantW, palette.Dim) + "  " +
+			stateStyle(state)
+		fmt.Fprintln(w, line)
+	}
+```
+
+Add a real alignment-under-color test to `cmd/models_test.go`. It temporarily
+forces `palette.Enabled = true` (restoring it afterward), strips ANSI codes
+with a regexp, and asserts that the SIZE and QUANTIZATION columns start at
+the same character offset on the header row and both data rows — using
+deliberately varying-length values so both the "row widens a column past
+the header" and "header stays the widest" cases are exercised in one test.
+It also asserts the raw output actually contains an ANSI escape sequence
+first, so the test can't pass vacuously if the `palette` mutation silently
+didn't take effect:
+
+```go
+func TestRunModels_ColumnsStayAlignedWithColorEnabled(t *testing.T) {
+	old := palette
+	palette = color.Palette{Enabled: true}
+	defer func() { palette = old }()
+
+	fake := &lmstudiotest.Fake{
+		ModelsResponse: &lmstudio.ModelsResponse{Models: []lmstudio.Model{
+			{
+				Key:             "openai/gpt-oss-20b", // longer than the "KEY" header
+				SizeBytes:       12884901888,           // "12.0GiB", longer than "SIZE" header
+				Quantization:    &lmstudio.Quantization{Name: "Q4_K_M"},
+				LoadedInstances: []lmstudio.LoadedInstance{{ID: "inst-1"}},
+			},
+			{Key: "b", SizeBytes: 500}, // shorter than the header on every column
+		}},
+	}
+	cmd := &cobra.Command{}
+	out := &bytes.Buffer{}
+	cmd.SetOut(out)
+
+	if err := runModels(cmd, fake, false); err != nil {
+		t.Fatalf("runModels: %v", err)
+	}
+
+	raw := out.String()
+	if !strings.Contains(raw, "\x1b[") {
+		t.Fatalf("output has no ANSI escape codes; palette.Enabled wasn't honored, so this test can't prove anything: %q", raw)
+	}
+
+	ansi := regexp.MustCompile(`\x1b\[[0-9;]*m`)
+	lines := strings.Split(strings.TrimRight(raw, "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("got %d lines, want 3 (header + 2 rows): %q", len(lines), raw)
+	}
+	plainHeader := ansi.ReplaceAllString(lines[0], "")
+	plainRow1 := ansi.ReplaceAllString(lines[1], "")
+	plainRow2 := ansi.ReplaceAllString(lines[2], "")
+
+	sizeIdx := strings.Index(plainHeader, "SIZE")
+	if idx := strings.Index(plainRow1, "12.0GiB"); idx != sizeIdx {
+		t.Errorf("SIZE column misaligned: header at %d, row1 (\"12.0GiB\") at %d\nheader: %q\nrow1:   %q", sizeIdx, idx, plainHeader, plainRow1)
+	}
+	if idx := strings.Index(plainRow2, "500B"); idx != sizeIdx {
+		t.Errorf("SIZE column misaligned: header at %d, row2 (\"500B\") at %d\nheader: %q\nrow2:   %q", sizeIdx, idx, plainHeader, plainRow2)
+	}
+
+	quantIdx := strings.Index(plainHeader, "QUANTIZATION")
+	if idx := strings.Index(plainRow1, "Q4_K_M"); idx != quantIdx {
+		t.Errorf("QUANTIZATION column misaligned: header at %d, row1 at %d\nheader: %q\nrow1:   %q", quantIdx, idx, plainHeader, plainRow1)
+	}
+	if idx := strings.Index(plainRow2, "-"); idx != quantIdx {
+		t.Errorf("QUANTIZATION column misaligned: header at %d, row2 (\"-\") at %d\nheader: %q\nrow2:   %q", quantIdx, idx, plainHeader, plainRow2)
+	}
+}
+```
+
+This needs two new imports in `cmd/models_test.go`: `"regexp"` and
+`"lmsctl/internal/color"` (for the `color.Palette{Enabled: true}` literal).
+
+Run: `go test ./cmd/... -run 'TestRunModels' -v`
+Expected: PASS (all 5 subtests, including the new alignment test)
+
+Commit:
+
+```bash
+git add cmd/models.go cmd/models_test.go
+git commit -m "Add real alignment-under-color test; drop modelRow's redundant state field"
+```
+
 ---
 
 ### Task 4: Color `status`
