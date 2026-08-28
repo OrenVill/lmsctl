@@ -37,3 +37,32 @@ func TestNewTable_AlignsColumns(t *testing.T) {
 		t.Errorf("columns not aligned: %q vs %q", lines[0], lines[1])
 	}
 }
+
+func TestPadRight_PadsUsingPlainLengthNotColoredLength(t *testing.T) {
+	// "colored" simulates an ANSI-wrapped string that's longer in bytes
+	// than the plain text it wraps -- PadRight must pad based on plain's
+	// length, not colored's, or alignment breaks when color is enabled.
+	got := PadRight("ab", "\033[36mab\033[0m", 5)
+	want := "\033[36mab\033[0m   "
+	if got != want {
+		t.Errorf("PadRight = %q, want %q", got, want)
+	}
+}
+
+func TestPadRight_NoPaddingWhenPlainAlreadyMeetsWidth(t *testing.T) {
+	got := PadRight("hello", "hello", 3)
+	if got != "hello" {
+		t.Errorf("PadRight = %q, want %q (no padding, and no truncation)", got, "hello")
+	}
+}
+
+func TestPadRight_PlainAndColoredCanDiffer(t *testing.T) {
+	// The common real usage: colored is plain wrapped in ANSI codes, but
+	// PadRight doesn't require that relationship -- it trusts plain's
+	// length and appends colored verbatim.
+	got := PadRight("KEY", "COLORED-KEY", 6)
+	want := "COLORED-KEY   "
+	if got != want {
+		t.Errorf("PadRight = %q, want %q", got, want)
+	}
+}
