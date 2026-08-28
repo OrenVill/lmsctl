@@ -621,12 +621,13 @@ func (c *HTTPClient) LoadModel(ctx context.Context, req LoadModelRequest) (*Load
 }
 
 func (c *HTTPClient) UnloadModel(ctx context.Context, instanceID string) error {
-	err := c.do(ctx, http.MethodPost, "/api/v1/models/unload", unloadModelRequest{InstanceID: instanceID}, nil)
-	var statusErr *httpStatusError
-	if errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusNotFound {
-		return &ErrModelNotFound{Model: instanceID}
-	}
-	return err
+	// Deliberately does not map 404 to ErrModelNotFound: that error's message
+	// ("no downloaded model matches ... run 'lmsctl models'") is written for
+	// a model key the user typed, not an instance ID this package resolved
+	// itself via ListModels. A 404 here means the instance vanished between
+	// that list call and this one; the generic httpStatusError from do() is
+	// more honest than misdirected advice.
+	return c.do(ctx, http.MethodPost, "/api/v1/models/unload", unloadModelRequest{InstanceID: instanceID}, nil)
 }
 ```
 
@@ -747,7 +748,7 @@ func TestUnloadModel_SendsInstanceID(t *testing.T) {
 	}
 }
 
-func TestUnloadModel_404ReturnsErrModelNotFound(t *testing.T) {
+func TestUnloadModel_404ReturnsGenericErrorNotErrModelNotFound(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
@@ -755,9 +756,15 @@ func TestUnloadModel_404ReturnsErrModelNotFound(t *testing.T) {
 
 	c := NewHTTPClient(strings.TrimPrefix(srv.URL, "http://"), "")
 	err := c.UnloadModel(context.Background(), "inst-missing")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	// UnloadModel deliberately does NOT map 404 to ErrModelNotFound: that
+	// error's "run 'lmsctl models'" advice is for a model key the user
+	// typed, not an instance ID this package resolved itself.
 	var notFound *ErrModelNotFound
-	if !errors.As(err, &notFound) {
-		t.Fatalf("err = %v, want *ErrModelNotFound", err)
+	if errors.As(err, &notFound) {
+		t.Fatalf("err = %v, want a generic error, not *ErrModelNotFound (instance IDs aren't model keys)", err)
 	}
 }
 ```
