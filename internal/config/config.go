@@ -93,6 +93,18 @@ func Resolve(flagHost, flagToken, envHost, envToken string, fileCfg Config) (Eff
 	return Effective{Host: host, Token: token}, nil
 }
 
+// EffectiveDisplay resolves host/token the same way Resolve does, but never
+// errors on a missing host: an empty result means "not configured
+// anywhere", which callers like `config show` display as such rather than
+// treating as a hard failure (unlike Resolve, which real commands need to
+// fail fast on).
+func EffectiveDisplay(flagHost, flagToken, envHost, envToken string, fileCfg Config) Effective {
+	return Effective{
+		Host:  firstNonEmpty(flagHost, envHost, fileCfg.Host),
+		Token: firstNonEmpty(flagToken, envToken, fileCfg.Token),
+	}
+}
+
 func firstNonEmpty(values ...string) string {
 	for _, v := range values {
 		if v != "" {

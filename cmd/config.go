@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -36,15 +37,20 @@ var configShowCmd = &cobra.Command{
 	Short: "Print the effective configuration (token redacted)",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := config.Load()
+		fileCfg, err := config.Load()
 		if err != nil {
 			return err
 		}
+		eff := config.EffectiveDisplay(flagHost, flagToken, os.Getenv("LMSCTL_HOST"), os.Getenv("LMSCTL_TOKEN"), fileCfg)
+		host := eff.Host
+		if host == "" {
+			host = "(not set)"
+		}
 		token := "(not set)"
-		if cfg.Token != "" {
+		if eff.Token != "" {
 			token = "(set)"
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "host:  %s\ntoken: %s\n", cfg.Host, token)
+		fmt.Fprintf(cmd.OutOrStdout(), "host:  %s\ntoken: %s\n", host, token)
 		return nil
 	},
 }
