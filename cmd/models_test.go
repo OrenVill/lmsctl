@@ -30,7 +30,7 @@ func TestRunModels_TableOutputShowsStateAndSize(t *testing.T) {
 	out := &bytes.Buffer{}
 	cmd.SetOut(out)
 
-	if err := runModels(cmd, fake); err != nil {
+	if err := runModels(cmd, fake, false); err != nil {
 		t.Fatalf("runModels: %v", err)
 	}
 
@@ -57,9 +57,6 @@ func TestFormatBytes(t *testing.T) {
 }
 
 func TestRunModels_JSONOutput(t *testing.T) {
-	flagJSON = true
-	defer func() { flagJSON = false }()
-
 	fake := &lmstudiotest.Fake{
 		ModelsResponse: &lmstudio.ModelsResponse{Models: []lmstudio.Model{
 			{Key: "openai/gpt-oss-20b"},
@@ -69,10 +66,34 @@ func TestRunModels_JSONOutput(t *testing.T) {
 	out := &bytes.Buffer{}
 	cmd.SetOut(out)
 
-	if err := runModels(cmd, fake); err != nil {
+	if err := runModels(cmd, fake, true); err != nil {
 		t.Fatalf("runModels: %v", err)
 	}
 	if !strings.Contains(out.String(), `"key": "openai/gpt-oss-20b"`) {
 		t.Errorf("output = %q, want JSON containing the model key", out.String())
+	}
+}
+
+func TestRunModels_JSONOutputWithNoModelsIsEmptyArrayNotNull(t *testing.T) {
+	fake := &lmstudiotest.Fake{ModelsResponse: &lmstudio.ModelsResponse{}}
+	cmd := &cobra.Command{}
+	out := &bytes.Buffer{}
+	cmd.SetOut(out)
+
+	if err := runModels(cmd, fake, true); err != nil {
+		t.Fatalf("runModels: %v", err)
+	}
+	if strings.Contains(out.String(), "null") {
+		t.Errorf("output = %q, want [] not null when there are no models", out.String())
+	}
+}
+
+func TestRunModels_PropagatesClientError(t *testing.T) {
+	fake := &lmstudiotest.Fake{ListModelsErr: &lmstudio.ErrUnreachable{Host: "http://host:1234"}}
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+
+	if err := runModels(cmd, fake, false); err == nil {
+		t.Fatal("expected error, got nil")
 	}
 }
