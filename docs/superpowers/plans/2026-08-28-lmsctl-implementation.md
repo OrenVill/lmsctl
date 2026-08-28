@@ -1402,7 +1402,7 @@ func TestRunStatus_NoModelsLoaded(t *testing.T) {
 	out := &bytes.Buffer{}
 	cmd.SetOut(out)
 
-	if err := runStatus(cmd, fake, "192.168.1.50:1234"); err != nil {
+	if err := runStatus(cmd, fake, "192.168.1.50:1234", false); err != nil {
 		t.Fatalf("runStatus: %v", err)
 	}
 	if !strings.Contains(out.String(), "No models currently loaded") {
@@ -1420,7 +1420,7 @@ func TestRunStatus_ReportsLoadedModel(t *testing.T) {
 	out := &bytes.Buffer{}
 	cmd.SetOut(out)
 
-	if err := runStatus(cmd, fake, "192.168.1.50:1234"); err != nil {
+	if err := runStatus(cmd, fake, "192.168.1.50:1234", false); err != nil {
 		t.Fatalf("runStatus: %v", err)
 	}
 	if !strings.Contains(out.String(), "openai/gpt-oss-20b (inst-1)") {
@@ -1433,15 +1433,12 @@ func TestRunStatus_PropagatesClientError(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetOut(&bytes.Buffer{})
 
-	if err := runStatus(cmd, fake, "host:1234"); err == nil {
+	if err := runStatus(cmd, fake, "host:1234", false); err == nil {
 		t.Fatal("expected error, got nil")
 	}
 }
 
 func TestRunStatus_JSONOutput(t *testing.T) {
-	flagJSON = true
-	defer func() { flagJSON = false }()
-
 	fake := &lmstudiotest.Fake{
 		ModelsResponse: &lmstudio.ModelsResponse{Models: []lmstudio.Model{
 			{Key: "openai/gpt-oss-20b", LoadedInstances: []lmstudio.LoadedInstance{{ID: "inst-1"}}},
@@ -1451,11 +1448,29 @@ func TestRunStatus_JSONOutput(t *testing.T) {
 	out := &bytes.Buffer{}
 	cmd.SetOut(out)
 
-	if err := runStatus(cmd, fake, "host:1234"); err != nil {
+	if err := runStatus(cmd, fake, "host:1234", true); err != nil {
 		t.Fatalf("runStatus: %v", err)
 	}
-	if !strings.Contains(out.String(), `"openai/gpt-oss-20b (inst-1)"`) {
-		t.Errorf("output = %q, want JSON containing the loaded model", out.String())
+	if !strings.Contains(out.String(), `"key": "openai/gpt-oss-20b"`) || !strings.Contains(out.String(), `"instance_id": "inst-1"`) {
+		t.Errorf("output = %q, want JSON containing the loaded model's key and instance_id", out.String())
+	}
+}
+
+func TestRunStatus_JSONOutputWithNothingLoadedOmitsNull(t *testing.T) {
+	fake := &lmstudiotest.Fake{
+		ModelsResponse: &lmstudio.ModelsResponse{Models: []lmstudio.Model{
+			{Key: "openai/gpt-oss-20b"},
+		}},
+	}
+	cmd := &cobra.Command{}
+	out := &bytes.Buffer{}
+	cmd.SetOut(out)
+
+	if err := runStatus(cmd, fake, "host:1234", true); err != nil {
+		t.Fatalf("runStatus: %v", err)
+	}
+	if strings.Contains(out.String(), "null") {
+		t.Errorf("output = %q, want loaded_models to be [] not null when nothing is loaded", out.String())
 	}
 }
 ```
@@ -1466,6 +1481,8 @@ Run: `go test ./cmd/... -run 'TestRunStatus' -v`
 Expected: FAIL — `runStatus`/`statusCmd` undefined.
 
 - [ ] **Step 3: Write `cmd/status.go`**
+
+`runStatus` takes `jsonOut bool` as an explicit parameter rather than reading the package-level `flagJSON` global directly, so it stays a pure function of its arguments (this also removes the need for tests to mutate and restore global state). The JSON shape uses small named structs — giving the `--json` output a documented, stable schema with deterministic key order — instead of a `map[string]any`, and reports each loaded model as structured `{key, instance_id}` data rather than a pre-formatted display string, so a script consuming `--json` output doesn't have to parse text meant for a terminal. `loaded` is initialized as an empty (non-nil) slice so it serializes as `[]`, never `null`, when nothing is loaded. The `"reachable": true` field from the original draft was dropped: it was always `true` by construction (an unreachable server returns an error before any JSON is built), so it carried no information a caller couldn't already get from the exit code — and keeping it would have implied a `"reachable": false` case that this command doesn't actually produce.
 
 ```go
 package cmd
@@ -1488,39 +1505,50 @@ var statusCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		return runStatus(cmd, client, eff.Host)
+		return runStatus(cmd, client, eff.Host, flagJSON)
 	},
 }
 
-func runStatus(cmd *cobra.Command, client lmstudio.Client, host string) error {
+// statusJSON is the --json schema for `lmsctl status`.
+type statusJSON struct {
+	Host   string            `json:"host"`
+	Loaded []loadedModelJSON `json:"loaded_models"`
+}
+
+type loadedModelJSON struct {
+	Key        string `json:"key"`
+	InstanceID string `json:"instance_id"`
+}
+
+// runStatus reports whether client is reachable and what it currently has
+// loaded, as human-readable text or (when jsonOut is true) JSON.
+func runStatus(cmd *cobra.Command, client lmstudio.Client, host string, jsonOut bool) error {
 	resp, err := client.ListModels(cmd.Context())
 	if err != nil {
 		return err
 	}
 
-	var loaded []string
+	loaded := []loadedModelJSON{}
 	for _, m := range resp.Models {
 		for _, inst := range m.LoadedInstances {
-			loaded = append(loaded, fmt.Sprintf("%s (%s)", m.Key, inst.ID))
+			loaded = append(loaded, loadedModelJSON{Key: m.Key, InstanceID: inst.ID})
 		}
 	}
 
-	if flagJSON {
-		return output.JSON(cmd.OutOrStdout(), map[string]any{
-			"reachable":     true,
-			"host":          host,
-			"loaded_models": loaded,
-		})
+	w := cmd.OutOrStdout()
+
+	if jsonOut {
+		return output.JSON(w, statusJSON{Host: host, Loaded: loaded})
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(), "LM Studio at %s: reachable\n", host)
+	fmt.Fprintf(w, "LM Studio at %s: reachable\n", host)
 	if len(loaded) == 0 {
-		fmt.Fprintln(cmd.OutOrStdout(), "No models currently loaded.")
+		fmt.Fprintln(w, "No models currently loaded.")
 		return nil
 	}
-	fmt.Fprintln(cmd.OutOrStdout(), "Loaded models:")
+	fmt.Fprintln(w, "Loaded models:")
 	for _, l := range loaded {
-		fmt.Fprintf(cmd.OutOrStdout(), "  - %s\n", l)
+		fmt.Fprintf(w, "  - %s (%s)\n", l.Key, l.InstanceID)
 	}
 	return nil
 }
@@ -1533,7 +1561,7 @@ func init() {
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `go test ./cmd/... -run 'TestRunStatus' -v`
-Expected: PASS (all 4 subtests)
+Expected: PASS (all 5 subtests)
 
 - [ ] **Step 5: Commit**
 
