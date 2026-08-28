@@ -802,15 +802,27 @@ Replace the `configShowCmd` line with:
 
 Note the exact spacing inside the bold labels: `"host:  "` has two trailing spaces, `"token: "` has one — this preserves the original `"host:  %s\ntoken: %s\n"` column alignment (both labels are 7 characters wide including trailing spaces) now that the labels carry their own trailing whitespace instead of it living in the format string. `token`'s value (`"(set)"`/`"(not set)"`) is deliberately left uncolored — see the design spec's rationale (coloring it could imply something about the token's validity, which `lmsctl` has no way to know).
 
+**Before verifying, fix a test-coupling issue this edit would otherwise introduce.** Task 4's code review found that `cmd/status_test.go` had an assertion checking a substring that spanned two separately-colored pieces (`"openai/gpt-oss-20b (inst-1)"`, contiguous only when color happens to be disabled) and fixed it by splitting into two `strings.Contains` checks. `cmd/config_test.go`'s `TestConfigShow_ShowsNotSetWhenNoHostConfigured` has the exact same shape: it currently checks the literal substring `"host:  (not set)"`, which spans the `Bold("host:  ")` piece and the plain `"(not set)"` piece you're about to introduce — contiguous today only because color is disabled during `go test`. Fix it the same way Task 4 did, before it becomes a latent trap: find this line in `cmd/config_test.go`
+
+```go
+	if !strings.Contains(out.String(), "host:  (not set)") {
+```
+
+and replace it with:
+
+```go
+	if !strings.Contains(out.String(), "host:  ") || !strings.Contains(out.String(), "(not set)") {
+```
+
 - [ ] **Step 2: Verify**
 
 Run: `go test ./cmd/... -run 'TestConfig' -v`
-Expected: PASS (all `TestConfig*` tests — in particular, confirm `TestConfigShow_ShowsNotSetWhenNoHostConfigured`'s check for the literal substring `"host:  (not set)"` still passes; it should, since color is disabled during tests and the label text plus its trailing spaces round-trips unchanged)
+Expected: PASS (all `TestConfig*` tests)
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/config.go
+git add cmd/config.go cmd/config_test.go
 git commit -m "Color labels and values in lmsctl config output"
 ```
 
