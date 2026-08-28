@@ -385,6 +385,11 @@ func (e *ErrModelNotLoaded) Error() string {
 }
 ```
 
+(`ErrModelNotLoaded`'s message was later revised, and a further `ErrInstanceNotFound`
+type was added after Task 15's review — see that task's notes; both changes are
+reflected in the actual committed `errors.go`, not repeated here to avoid
+re-litigating history in this earlier section.)
+
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `go test ./internal/lmstudio/... -run 'TestErr' -v`
@@ -621,10 +626,36 @@ func (c *HTTPClient) LoadModel(ctx context.Context, req LoadModelRequest) (*Load
 }
 
 func (c *HTTPClient) UnloadModel(ctx context.Context, instanceID string) error {
+	// Deliberately does not map 404 to ErrModelNotFound: that error's message
+	// ("no downloaded model matches ... run 'lmsctl models'") is written for
+	// a model key the user typed, not an instance ID this package resolved
+	// itself via ListModels. A 404 here means the instance vanished between
+	// that list call and this one; the generic httpStatusError from do() is
+	// more honest than misdirected advice.
+	return c.do(ctx, http.MethodPost, "/api/v1/models/unload", unloadModelRequest{InstanceID: instanceID}, nil)
+}
+```
+
+**Later revised** (after Task 15's code review): once `runUnload` (Task 15)
+existed as `UnloadModel`'s only caller, a reviewer found it had no way to
+distinguish "the instance is already gone" (a harmless race — worth
+skipping and continuing) from any other failure (worth aborting on), because
+`httpStatusError` is unexported. `UnloadModel` was changed to map 404 to a
+new exported `ErrInstanceNotFound{InstanceID: instanceID}` type (added to
+`errors.go`) instead of passing the generic `httpStatusError` through:
+
+```go
+func (c *HTTPClient) UnloadModel(ctx context.Context, instanceID string) error {
+	// Maps 404 to ErrInstanceNotFound rather than ErrModelNotFound: this
+	// method only ever receives instance IDs the caller resolved itself via
+	// ListModels, never a user-typed model key, so ErrModelNotFound's "run
+	// 'lmsctl models'" advice would be wrong here. A 404 means the instance
+	// is already gone -- most likely already unloaded -- which callers can
+	// treat as a harmless race rather than a hard failure.
 	err := c.do(ctx, http.MethodPost, "/api/v1/models/unload", unloadModelRequest{InstanceID: instanceID}, nil)
 	var statusErr *httpStatusError
 	if errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusNotFound {
-		return &ErrModelNotFound{Model: instanceID}
+		return &ErrInstanceNotFound{InstanceID: instanceID}
 	}
 	return err
 }
@@ -747,7 +778,7 @@ func TestUnloadModel_SendsInstanceID(t *testing.T) {
 	}
 }
 
-func TestUnloadModel_404ReturnsErrModelNotFound(t *testing.T) {
+func TestUnloadModel_404ReturnsGenericErrorNotErrModelNotFound(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
@@ -755,9 +786,47 @@ func TestUnloadModel_404ReturnsErrModelNotFound(t *testing.T) {
 
 	c := NewHTTPClient(strings.TrimPrefix(srv.URL, "http://"), "")
 	err := c.UnloadModel(context.Background(), "inst-missing")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	// UnloadModel deliberately does NOT map 404 to ErrModelNotFound: that
+	// error's "run 'lmsctl models'" advice is for a model key the user
+	// typed, not an instance ID this package resolved itself.
 	var notFound *ErrModelNotFound
+	if errors.As(err, &notFound) {
+		t.Fatalf("err = %v, want a generic error, not *ErrModelNotFound (instance IDs aren't model keys)", err)
+	}
+}
+```
+
+**Superseded** (after Task 15's code review, alongside the `UnloadModel`
+revision above): "a generic error" turned out to be a dead end for
+`runUnload`, which needs to distinguish "already gone" from any other
+failure. Replaced with a test that pins the new `*ErrInstanceNotFound` type
+instead:
+
+```go
+func TestUnloadModel_404ReturnsErrInstanceNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(strings.TrimPrefix(srv.URL, "http://"), "")
+	err := c.UnloadModel(context.Background(), "inst-missing")
+	var notFound *ErrInstanceNotFound
 	if !errors.As(err, &notFound) {
-		t.Fatalf("err = %v, want *ErrModelNotFound", err)
+		t.Fatalf("err = %v, want *ErrInstanceNotFound", err)
+	}
+	if notFound.InstanceID != "inst-missing" {
+		t.Errorf("InstanceID = %q, want %q", notFound.InstanceID, "inst-missing")
+	}
+	// Confirm it's NOT ErrModelNotFound -- that error's advice ("run
+	// 'lmsctl models'") is for a model key the user typed, not an instance
+	// ID this package resolved itself.
+	var wrongType *ErrModelNotFound
+	if errors.As(err, &wrongType) {
+		t.Fatalf("err = %v, should not be *ErrModelNotFound", err)
 	}
 }
 ```
@@ -1306,7 +1375,12 @@ func TestNewTable_AlignsColumns(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("got %d lines, want 2: %q", len(lines), buf.String())
 	}
-	if len(lines[0]) != len(lines[1]) {
+	// Equal line length is a poor proxy for "aligned" (text/tabwriter doesn't
+	// pad an untabbed last cell, so it isn't achievable here anyway, and
+	// achieving it via a wrapper adds trailing whitespace to every row plus
+	// edge cases for tab-free lines). Check what "aligned" actually means:
+	// the second column starts at the same offset on both lines.
+	if strings.Index(lines[0], "BB") != strings.Index(lines[1], "D") {
 		t.Errorf("columns not aligned: %q vs %q", lines[0], lines[1])
 	}
 }
@@ -1390,7 +1464,7 @@ func TestRunStatus_NoModelsLoaded(t *testing.T) {
 	out := &bytes.Buffer{}
 	cmd.SetOut(out)
 
-	if err := runStatus(cmd, fake, "192.168.1.50:1234"); err != nil {
+	if err := runStatus(cmd, fake, "192.168.1.50:1234", false); err != nil {
 		t.Fatalf("runStatus: %v", err)
 	}
 	if !strings.Contains(out.String(), "No models currently loaded") {
@@ -1408,7 +1482,7 @@ func TestRunStatus_ReportsLoadedModel(t *testing.T) {
 	out := &bytes.Buffer{}
 	cmd.SetOut(out)
 
-	if err := runStatus(cmd, fake, "192.168.1.50:1234"); err != nil {
+	if err := runStatus(cmd, fake, "192.168.1.50:1234", false); err != nil {
 		t.Fatalf("runStatus: %v", err)
 	}
 	if !strings.Contains(out.String(), "openai/gpt-oss-20b (inst-1)") {
@@ -1421,15 +1495,12 @@ func TestRunStatus_PropagatesClientError(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetOut(&bytes.Buffer{})
 
-	if err := runStatus(cmd, fake, "host:1234"); err == nil {
+	if err := runStatus(cmd, fake, "host:1234", false); err == nil {
 		t.Fatal("expected error, got nil")
 	}
 }
 
 func TestRunStatus_JSONOutput(t *testing.T) {
-	flagJSON = true
-	defer func() { flagJSON = false }()
-
 	fake := &lmstudiotest.Fake{
 		ModelsResponse: &lmstudio.ModelsResponse{Models: []lmstudio.Model{
 			{Key: "openai/gpt-oss-20b", LoadedInstances: []lmstudio.LoadedInstance{{ID: "inst-1"}}},
@@ -1439,11 +1510,29 @@ func TestRunStatus_JSONOutput(t *testing.T) {
 	out := &bytes.Buffer{}
 	cmd.SetOut(out)
 
-	if err := runStatus(cmd, fake, "host:1234"); err != nil {
+	if err := runStatus(cmd, fake, "host:1234", true); err != nil {
 		t.Fatalf("runStatus: %v", err)
 	}
-	if !strings.Contains(out.String(), `"openai/gpt-oss-20b (inst-1)"`) {
-		t.Errorf("output = %q, want JSON containing the loaded model", out.String())
+	if !strings.Contains(out.String(), `"key": "openai/gpt-oss-20b"`) || !strings.Contains(out.String(), `"instance_id": "inst-1"`) {
+		t.Errorf("output = %q, want JSON containing the loaded model's key and instance_id", out.String())
+	}
+}
+
+func TestRunStatus_JSONOutputWithNothingLoadedOmitsNull(t *testing.T) {
+	fake := &lmstudiotest.Fake{
+		ModelsResponse: &lmstudio.ModelsResponse{Models: []lmstudio.Model{
+			{Key: "openai/gpt-oss-20b"},
+		}},
+	}
+	cmd := &cobra.Command{}
+	out := &bytes.Buffer{}
+	cmd.SetOut(out)
+
+	if err := runStatus(cmd, fake, "host:1234", true); err != nil {
+		t.Fatalf("runStatus: %v", err)
+	}
+	if strings.Contains(out.String(), "null") {
+		t.Errorf("output = %q, want loaded_models to be [] not null when nothing is loaded", out.String())
 	}
 }
 ```
@@ -1454,6 +1543,8 @@ Run: `go test ./cmd/... -run 'TestRunStatus' -v`
 Expected: FAIL — `runStatus`/`statusCmd` undefined.
 
 - [ ] **Step 3: Write `cmd/status.go`**
+
+`runStatus` takes `jsonOut bool` as an explicit parameter rather than reading the package-level `flagJSON` global directly, so it stays a pure function of its arguments (this also removes the need for tests to mutate and restore global state). The JSON shape uses small named structs — giving the `--json` output a documented, stable schema with deterministic key order — instead of a `map[string]any`, and reports each loaded model as structured `{key, instance_id}` data rather than a pre-formatted display string, so a script consuming `--json` output doesn't have to parse text meant for a terminal. `loaded` is initialized as an empty (non-nil) slice so it serializes as `[]`, never `null`, when nothing is loaded. The `"reachable": true` field from the original draft was dropped: it was always `true` by construction (an unreachable server returns an error before any JSON is built), so it carried no information a caller couldn't already get from the exit code — and keeping it would have implied a `"reachable": false` case that this command doesn't actually produce.
 
 ```go
 package cmd
@@ -1476,39 +1567,50 @@ var statusCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		return runStatus(cmd, client, eff.Host)
+		return runStatus(cmd, client, eff.Host, flagJSON)
 	},
 }
 
-func runStatus(cmd *cobra.Command, client lmstudio.Client, host string) error {
+// statusJSON is the --json schema for `lmsctl status`.
+type statusJSON struct {
+	Host   string            `json:"host"`
+	Loaded []loadedModelJSON `json:"loaded_models"`
+}
+
+type loadedModelJSON struct {
+	Key        string `json:"key"`
+	InstanceID string `json:"instance_id"`
+}
+
+// runStatus reports whether client is reachable and what it currently has
+// loaded, as human-readable text or (when jsonOut is true) JSON.
+func runStatus(cmd *cobra.Command, client lmstudio.Client, host string, jsonOut bool) error {
 	resp, err := client.ListModels(cmd.Context())
 	if err != nil {
 		return err
 	}
 
-	var loaded []string
+	loaded := []loadedModelJSON{}
 	for _, m := range resp.Models {
 		for _, inst := range m.LoadedInstances {
-			loaded = append(loaded, fmt.Sprintf("%s (%s)", m.Key, inst.ID))
+			loaded = append(loaded, loadedModelJSON{Key: m.Key, InstanceID: inst.ID})
 		}
 	}
 
-	if flagJSON {
-		return output.JSON(cmd.OutOrStdout(), map[string]any{
-			"reachable":     true,
-			"host":          host,
-			"loaded_models": loaded,
-		})
+	w := cmd.OutOrStdout()
+
+	if jsonOut {
+		return output.JSON(w, statusJSON{Host: host, Loaded: loaded})
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(), "LM Studio at %s: reachable\n", host)
+	fmt.Fprintf(w, "LM Studio at %s: reachable\n", host)
 	if len(loaded) == 0 {
-		fmt.Fprintln(cmd.OutOrStdout(), "No models currently loaded.")
+		fmt.Fprintln(w, "No models currently loaded.")
 		return nil
 	}
-	fmt.Fprintln(cmd.OutOrStdout(), "Loaded models:")
+	fmt.Fprintln(w, "Loaded models:")
 	for _, l := range loaded {
-		fmt.Fprintf(cmd.OutOrStdout(), "  - %s\n", l)
+		fmt.Fprintf(w, "  - %s (%s)\n", l.Key, l.InstanceID)
 	}
 	return nil
 }
@@ -1521,7 +1623,7 @@ func init() {
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `go test ./cmd/... -run 'TestRunStatus' -v`
-Expected: PASS (all 4 subtests)
+Expected: PASS (all 5 subtests)
 
 - [ ] **Step 5: Commit**
 
@@ -1554,6 +1656,15 @@ import (
 	"lmsctl/internal/lmstudio/lmstudiotest"
 )
 
+`runModels` takes `jsonOut bool` as an explicit parameter (the same convention
+established when Task 12 was revised after review), rather than reading the
+`flagJSON` global directly — this keeps it a pure function of its arguments
+and avoids tests needing to mutate/restore global state. `resp.Models` is
+also guarded against a nil slice before being marshaled, so `--json` reports
+`[]` rather than `null` if LM Studio ever returns a response with no
+`models` field.
+
+```go
 func TestRunModels_TableOutputShowsStateAndSize(t *testing.T) {
 	fake := &lmstudiotest.Fake{
 		ModelsResponse: &lmstudio.ModelsResponse{Models: []lmstudio.Model{
@@ -1573,7 +1684,7 @@ func TestRunModels_TableOutputShowsStateAndSize(t *testing.T) {
 	out := &bytes.Buffer{}
 	cmd.SetOut(out)
 
-	if err := runModels(cmd, fake); err != nil {
+	if err := runModels(cmd, fake, false); err != nil {
 		t.Fatalf("runModels: %v", err)
 	}
 
@@ -1600,9 +1711,6 @@ func TestFormatBytes(t *testing.T) {
 }
 
 func TestRunModels_JSONOutput(t *testing.T) {
-	flagJSON = true
-	defer func() { flagJSON = false }()
-
 	fake := &lmstudiotest.Fake{
 		ModelsResponse: &lmstudio.ModelsResponse{Models: []lmstudio.Model{
 			{Key: "openai/gpt-oss-20b"},
@@ -1612,11 +1720,35 @@ func TestRunModels_JSONOutput(t *testing.T) {
 	out := &bytes.Buffer{}
 	cmd.SetOut(out)
 
-	if err := runModels(cmd, fake); err != nil {
+	if err := runModels(cmd, fake, true); err != nil {
 		t.Fatalf("runModels: %v", err)
 	}
 	if !strings.Contains(out.String(), `"key": "openai/gpt-oss-20b"`) {
 		t.Errorf("output = %q, want JSON containing the model key", out.String())
+	}
+}
+
+func TestRunModels_JSONOutputWithNoModelsIsEmptyArrayNotNull(t *testing.T) {
+	fake := &lmstudiotest.Fake{ModelsResponse: &lmstudio.ModelsResponse{}}
+	cmd := &cobra.Command{}
+	out := &bytes.Buffer{}
+	cmd.SetOut(out)
+
+	if err := runModels(cmd, fake, true); err != nil {
+		t.Fatalf("runModels: %v", err)
+	}
+	if strings.Contains(out.String(), "null") {
+		t.Errorf("output = %q, want [] not null when there are no models", out.String())
+	}
+}
+
+func TestRunModels_PropagatesClientError(t *testing.T) {
+	fake := &lmstudiotest.Fake{ListModelsErr: &lmstudio.ErrUnreachable{Host: "http://host:1234"}}
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+
+	if err := runModels(cmd, fake, false); err == nil {
+		t.Fatal("expected error, got nil")
 	}
 }
 ```
@@ -1650,18 +1782,22 @@ var modelsCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		return runModels(cmd, client)
+		return runModels(cmd, client, flagJSON)
 	},
 }
 
-func runModels(cmd *cobra.Command, client lmstudio.Client) error {
+func runModels(cmd *cobra.Command, client lmstudio.Client, jsonOut bool) error {
 	resp, err := client.ListModels(cmd.Context())
 	if err != nil {
 		return err
 	}
 
-	if flagJSON {
-		return output.JSON(cmd.OutOrStdout(), resp.Models)
+	if jsonOut {
+		models := resp.Models
+		if models == nil {
+			models = []lmstudio.Model{}
+		}
+		return output.JSON(cmd.OutOrStdout(), models)
 	}
 
 	tw := output.NewTable(cmd.OutOrStdout())
@@ -1701,7 +1837,7 @@ func init() {
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `go test ./cmd/... -run 'TestRunModels|TestFormatBytes' -v`
-Expected: PASS (all subtests)
+Expected: PASS (all 5 subtests)
 
 - [ ] **Step 5: Commit**
 
@@ -1742,7 +1878,7 @@ func TestRunLoad_SendsModelAndReportsInstanceID(t *testing.T) {
 	out := &bytes.Buffer{}
 	cmd.SetOut(out)
 
-	if err := runLoad(cmd, fake, "openai/gpt-oss-20b"); err != nil {
+	if err := runLoad(cmd, fake, "openai/gpt-oss-20b", false); err != nil {
 		t.Fatalf("runLoad: %v", err)
 	}
 	if len(fake.LoadModelRequests) != 1 || fake.LoadModelRequests[0].Model != "openai/gpt-oss-20b" {
@@ -1758,15 +1894,12 @@ func TestRunLoad_PropagatesModelNotFound(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetOut(&bytes.Buffer{})
 
-	if err := runLoad(cmd, fake, "nope"); err == nil {
+	if err := runLoad(cmd, fake, "nope", false); err == nil {
 		t.Fatal("expected error, got nil")
 	}
 }
 
 func TestRunLoad_JSONOutput(t *testing.T) {
-	flagJSON = true
-	defer func() { flagJSON = false }()
-
 	fake := &lmstudiotest.Fake{
 		LoadModelResponse: &lmstudio.LoadModelResponse{InstanceID: "inst-1"},
 	}
@@ -1774,7 +1907,7 @@ func TestRunLoad_JSONOutput(t *testing.T) {
 	out := &bytes.Buffer{}
 	cmd.SetOut(out)
 
-	if err := runLoad(cmd, fake, "openai/gpt-oss-20b"); err != nil {
+	if err := runLoad(cmd, fake, "openai/gpt-oss-20b", true); err != nil {
 		t.Fatalf("runLoad: %v", err)
 	}
 	if !strings.Contains(out.String(), `"instance_id": "inst-1"`) {
@@ -1783,12 +1916,19 @@ func TestRunLoad_JSONOutput(t *testing.T) {
 }
 ```
 
+`runLoad` takes `jsonOut bool` as an explicit parameter, following the
+convention established when Tasks 12-13 were revised after review (a pure
+function of its arguments, no test needing to mutate/restore the `flagJSON`
+global) — this task uses that convention from the start.
+
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `go test ./cmd/... -run 'TestRunLoad' -v`
 Expected: FAIL — `runLoad`/`loadCmd` undefined.
 
 - [ ] **Step 3: Write `cmd/load.go`**
+
+Flag-to-request construction is pulled into its own function, `buildLoadRequest(fs *pflag.FlagSet, model string)`, taking a `*pflag.FlagSet` explicitly rather than reaching into `cmd.Flags()` and the package-level `loadFlag*` globals from inside `runLoad`. This is the only genuinely novel logic in this command (which flag maps to which optional field, and whether it was explicitly set), and without a seam here it's untestable without registering real cobra flags — a typo in any of the three `Changed("...")` string literals would silently disable that flag forever, with the existing 3 tests (which never touch `cmd.Flags()` at all) staying green. `buildLoadRequest` can be tested directly against a bare `pflag.FlagSet`, independent of cobra or the package-level globals.
 
 ```go
 package cmd
@@ -1797,6 +1937,7 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"lmsctl/internal/lmstudio"
 	"lmsctl/internal/output"
@@ -1817,31 +1958,40 @@ var loadCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		return runLoad(cmd, client, args[0])
+		return runLoad(cmd, client, args[0], flagJSON)
 	},
 }
 
-func runLoad(cmd *cobra.Command, client lmstudio.Client, model string) error {
+// buildLoadRequest builds a LoadModelRequest for model, including only the
+// optional fields whose flag was explicitly set on fs (so e.g.
+// --flash-attention=false is sent as false rather than omitted, while an
+// unset flag lets LM Studio apply its own default).
+func buildLoadRequest(fs *pflag.FlagSet, model string) lmstudio.LoadModelRequest {
 	req := lmstudio.LoadModelRequest{Model: model}
-	if cmd.Flags().Changed("context-length") {
-		v := loadFlagContextLength
+	if fs.Changed("context-length") {
+		v, _ := fs.GetInt("context-length")
 		req.ContextLength = &v
 	}
-	if cmd.Flags().Changed("flash-attention") {
-		v := loadFlagFlashAttn
+	if fs.Changed("flash-attention") {
+		v, _ := fs.GetBool("flash-attention")
 		req.FlashAttention = &v
 	}
-	if cmd.Flags().Changed("offload-kv-cache-to-gpu") {
-		v := loadFlagOffloadKV
+	if fs.Changed("offload-kv-cache-to-gpu") {
+		v, _ := fs.GetBool("offload-kv-cache-to-gpu")
 		req.OffloadKVCacheToGPU = &v
 	}
+	return req
+}
+
+func runLoad(cmd *cobra.Command, client lmstudio.Client, model string, jsonOut bool) error {
+	req := buildLoadRequest(cmd.Flags(), model)
 
 	resp, err := client.LoadModel(cmd.Context(), req)
 	if err != nil {
 		return err
 	}
 
-	if flagJSON {
+	if jsonOut {
 		return output.JSON(cmd.OutOrStdout(), resp)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Loaded %s as instance %s (%.1fs)\n", model, resp.InstanceID, resp.LoadTimeSeconds)
@@ -1856,10 +2006,52 @@ func init() {
 }
 ```
 
+Add two tests to `cmd/load_test.go` exercising `buildLoadRequest` directly against a bare `pflag.FlagSet` (add `"github.com/spf13/pflag"` to the test file's imports):
+
+```go
+func TestBuildLoadRequest_OnlyIncludesExplicitlySetFlags(t *testing.T) {
+	fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	fs.Int("context-length", 0, "")
+	fs.Bool("flash-attention", false, "")
+	fs.Bool("offload-kv-cache-to-gpu", false, "")
+	if err := fs.Parse([]string{"--context-length", "8192", "--flash-attention=false"}); err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	req := buildLoadRequest(fs, "openai/gpt-oss-20b")
+
+	if req.Model != "openai/gpt-oss-20b" {
+		t.Errorf("Model = %q, want %q", req.Model, "openai/gpt-oss-20b")
+	}
+	if req.ContextLength == nil || *req.ContextLength != 8192 {
+		t.Errorf("ContextLength = %v, want 8192", req.ContextLength)
+	}
+	if req.FlashAttention == nil || *req.FlashAttention != false {
+		t.Errorf("FlashAttention = %v, want a set false (explicitly passed)", req.FlashAttention)
+	}
+	if req.OffloadKVCacheToGPU != nil {
+		t.Errorf("OffloadKVCacheToGPU = %v, want nil (flag not passed)", req.OffloadKVCacheToGPU)
+	}
+}
+
+func TestBuildLoadRequest_NoFlagsSetOnlyIncludesModel(t *testing.T) {
+	fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	fs.Int("context-length", 0, "")
+	fs.Bool("flash-attention", false, "")
+	fs.Bool("offload-kv-cache-to-gpu", false, "")
+
+	req := buildLoadRequest(fs, "some/model")
+
+	if req.ContextLength != nil || req.FlashAttention != nil || req.OffloadKVCacheToGPU != nil {
+		t.Errorf("expected no optional fields set when no flags were passed, got %+v", req)
+	}
+}
+```
+
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `go test ./cmd/... -run 'TestRunLoad' -v`
-Expected: PASS (all 3 subtests)
+Run: `go test ./cmd/... -run 'TestRunLoad|TestBuildLoadRequest' -v`
+Expected: PASS (all 5 subtests)
 
 - [ ] **Step 5: Commit**
 
@@ -2057,6 +2249,234 @@ git add cmd/unload.go cmd/unload_test.go
 git commit -m "Add lmsctl unload command"
 ```
 
+**Follow-up fix** (after code review, once this was the only caller of
+`UnloadModel` and the design could actually be exercised end-to-end): three
+issues were found and fixed together, since they're all in the same small
+function. (1) `unload <model> --all` silently ignored `<model>` and unloaded
+everything — surprising scope widening, now rejected. (2) A 404 on unload
+(the instance already gone, e.g. via LM Studio's own idle eviction or its
+UI) aborted the whole sweep and left later instances unattempted, even
+though "already gone" is the goal state, not a failure — now uses the new
+`ErrInstanceNotFound` type (see Tasks 4/6's revisions above) to skip and
+continue instead. (3) A model key that isn't downloaded at all got the same
+"not currently loaded" message as one that's downloaded-but-idle, even
+though the data in hand (`resp.Models`) can tell them apart — now returns
+`ErrModelNotFound` for the former.
+
+Replace `cmd/unload.go` with:
+
+```go
+package cmd
+
+import (
+	"errors"
+	"fmt"
+
+	"github.com/spf13/cobra"
+
+	"lmsctl/internal/lmstudio"
+)
+
+var unloadFlagAll bool
+
+var unloadCmd = &cobra.Command{
+	Use:   "unload [model]",
+	Short: "Unload a model (or all loaded models) on the remote LM Studio instance",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		client, _, err := newClient()
+		if err != nil {
+			return err
+		}
+		var model string
+		if len(args) == 1 {
+			model = args[0]
+		}
+		return runUnload(cmd, client, model, unloadFlagAll)
+	},
+}
+
+func runUnload(cmd *cobra.Command, client lmstudio.Client, model string, all bool) error {
+	if all && model != "" {
+		return errors.New("pass either a model or --all, not both")
+	}
+	if !all && model == "" {
+		return errors.New("specify a model to unload or pass --all")
+	}
+
+	resp, err := client.ListModels(cmd.Context())
+	if err != nil {
+		return err
+	}
+
+	found := false
+	var toUnload []string
+	for _, m := range resp.Models {
+		if !all && m.Key != model {
+			continue
+		}
+		found = true
+		for _, inst := range m.LoadedInstances {
+			toUnload = append(toUnload, inst.ID)
+		}
+	}
+
+	if len(toUnload) == 0 {
+		if all {
+			fmt.Fprintln(cmd.OutOrStdout(), "No models currently loaded.")
+			return nil
+		}
+		if !found {
+			return &lmstudio.ErrModelNotFound{Model: model}
+		}
+		return &lmstudio.ErrModelNotLoaded{Model: model}
+	}
+
+	for _, id := range toUnload {
+		if err := client.UnloadModel(cmd.Context(), id); err != nil {
+			var notFound *lmstudio.ErrInstanceNotFound
+			if errors.As(err, &notFound) {
+				fmt.Fprintf(cmd.OutOrStdout(), "Instance %s was already unloaded\n", id)
+				continue
+			}
+			return err
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Unloaded instance %s\n", id)
+	}
+	return nil
+}
+
+func init() {
+	unloadCmd.Flags().BoolVar(&unloadFlagAll, "all", false, "unload every currently loaded model")
+	rootCmd.AddCommand(unloadCmd)
+}
+```
+
+Add `"errors"` to `cmd/unload_test.go`'s imports, and append these tests
+(the original 5 tests above are unchanged and still apply):
+
+```go
+func TestRunUnload_RejectsModelWithAll(t *testing.T) {
+	fake := &lmstudiotest.Fake{ModelsResponse: modelsWithLoaded()}
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+
+	if err := runUnload(cmd, fake, "openai/gpt-oss-20b", true); err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if len(fake.UnloadInstanceIDs) != 0 {
+		t.Errorf("unloaded instance ids = %v, want none (should reject before calling the client)", fake.UnloadInstanceIDs)
+	}
+}
+
+func TestRunUnload_SkipsAlreadyUnloadedInstanceAndContinues(t *testing.T) {
+	fake := &lmstudiotest.Fake{
+		ModelsResponse: modelsWithLoaded(),
+		UnloadModelErr: &lmstudio.ErrInstanceNotFound{InstanceID: "inst-1"},
+	}
+	cmd := &cobra.Command{}
+	out := &bytes.Buffer{}
+	cmd.SetOut(out)
+
+	if err := runUnload(cmd, fake, "", true); err != nil {
+		t.Fatalf("runUnload: %v", err)
+	}
+	if len(fake.UnloadInstanceIDs) != 2 {
+		t.Errorf("unload attempts = %v, want 2 (both instances attempted despite the error)", fake.UnloadInstanceIDs)
+	}
+	if !strings.Contains(out.String(), "already unloaded") {
+		t.Errorf("output = %q, want it to say the instance was already unloaded", out.String())
+	}
+}
+
+func TestRunUnload_PropagatesGenericUnloadError(t *testing.T) {
+	fake := &lmstudiotest.Fake{
+		ModelsResponse: modelsWithLoaded(),
+		UnloadModelErr: &lmstudio.ErrUnreachable{Host: "http://host:1234"},
+	}
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+
+	if err := runUnload(cmd, fake, "openai/gpt-oss-20b", false); err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestRunUnload_PropagatesListModelsError(t *testing.T) {
+	fake := &lmstudiotest.Fake{ListModelsErr: &lmstudio.ErrUnreachable{Host: "http://host:1234"}}
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+
+	if err := runUnload(cmd, fake, "openai/gpt-oss-20b", false); err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestRunUnload_UnknownModelReturnsErrModelNotFound(t *testing.T) {
+	fake := &lmstudiotest.Fake{ModelsResponse: modelsWithLoaded()}
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+
+	err := runUnload(cmd, fake, "totally/unknown", false)
+	var notFound *lmstudio.ErrModelNotFound
+	if !errors.As(err, &notFound) {
+		t.Fatalf("err = %v, want *lmstudio.ErrModelNotFound", err)
+	}
+}
+
+func TestRunUnload_UnloadsAllInstancesOfMatchingModel(t *testing.T) {
+	fake := &lmstudiotest.Fake{ModelsResponse: &lmstudio.ModelsResponse{Models: []lmstudio.Model{
+		{Key: "multi/instance", LoadedInstances: []lmstudio.LoadedInstance{{ID: "inst-a"}, {ID: "inst-b"}}},
+	}}}
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+
+	if err := runUnload(cmd, fake, "multi/instance", false); err != nil {
+		t.Fatalf("runUnload: %v", err)
+	}
+	if len(fake.UnloadInstanceIDs) != 2 {
+		t.Errorf("unloaded instance ids = %v, want 2 entries", fake.UnloadInstanceIDs)
+	}
+}
+```
+
+Run: `go test ./cmd/... -run 'TestRunUnload' -v`
+Expected: PASS (all 11 subtests)
+
+Commit:
+
+```bash
+git add cmd/unload.go cmd/unload_test.go internal/lmstudio/errors.go internal/lmstudio/client.go internal/lmstudio/client_test.go
+git commit -m "Fix unload: reject model+--all together, skip already-unloaded instances, distinguish unknown from idle models"
+```
+
+**One more coverage gap found on verification**: the original Step 1 test
+`TestRunUnload_ModelNotLoadedReturnsError` used the key `"not/loaded"`,
+which isn't in `modelsWithLoaded()` — so after this fix it silently started
+exercising the new `ErrModelNotFound` (unknown model) branch instead of the
+`ErrModelNotLoaded` (downloaded-but-idle) branch its name promised, leaving
+that branch completely unpinned (swapping the two error types in
+`unload.go` still passed the full suite). Replaced it with:
+
+```go
+func TestRunUnload_DownloadedButIdleModelReturnsErrModelNotLoaded(t *testing.T) {
+	fake := &lmstudiotest.Fake{ModelsResponse: &lmstudio.ModelsResponse{Models: []lmstudio.Model{
+		{Key: "idle/model"}, // downloaded, no loaded instances
+	}}}
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+
+	err := runUnload(cmd, fake, "idle/model", false)
+	var notLoaded *lmstudio.ErrModelNotLoaded
+	if !errors.As(err, &notLoaded) {
+		t.Fatalf("err = %v, want *lmstudio.ErrModelNotLoaded", err)
+	}
+	if !strings.Contains(err.Error(), "idle/model") {
+		t.Errorf("err = %v, want it to mention the model", err)
+	}
+}
+```
+
 ---
 
 ### Task 16: Full test suite, build, README, and manual smoke test
@@ -2120,8 +2540,15 @@ lmsctl unload --all                    # unload everything loaded
 lmsctl config show                     # see effective config (token redacted)
 ```
 
-Add `--json` to any command for machine-readable output.
+Add `--json` to `status`, `models`, or `load` for machine-readable output.
+(`unload` and `config` are plain-text only — as built, they have no output
+that benefits from a JSON form; the `--json` global flag is silently a
+no-op on those two.)
 ```
+
+(README updated to match what was actually built — `unload`/`config` never
+gained `--json` support, since Task 15's design never called `output.JSON`
+and Task 10's `config` commands don't check `flagJSON` either.)
 
 - [ ] **Step 4: Manual smoke test against your real remote LM Studio**
 
@@ -2155,3 +2582,49 @@ git commit -m "Add README and complete lmsctl v1"
 - **Spec coverage:** model lifecycle (list/load/unload) → Tasks 4–6, 13–15; status/monitoring → Tasks 4, 12; REST API connection → Task 4; config file with default host, flag/env override → Tasks 8–10; Go + cobra + yaml → Tasks 1, 8; error handling for unreachable/401/404 → Tasks 3–6; JSON + table output → Tasks 11–15; testing approach (fake client, httptest, manual smoke test) → Tasks 4–7, 16.
 - **Out of scope confirmed:** no `chat`/`pull` commands are included, matching the spec.
 - **Open item resolved:** the spec's open item (exact `load`/`list` JSON schemas) was resolved by checking LM Studio's live developer docs before writing this plan; those schemas are recorded above and used verbatim in Task 2's types.
+
+## Final full-implementation review fixes (post-Task 16)
+
+A holistic review across the whole implementation (Tasks 1-16 combined —
+something no single-task review could catch) found three real issues once
+everything was assembled and exercised end-to-end:
+
+1. **Critical: the 4096-byte body cap from Task 4's hardening fix
+   (`26f9760`) applies to successful responses, not just error bodies.**
+   `do()` read the *entire* response body (success or error) through
+   `io.LimitReader(resp.Body, maxErrorBodyBytes)` before either building an
+   error or unmarshaling `out`. A `GET /api/v1/models` response naturally
+   exceeds 4096 bytes once a user has more than ~10-13 downloaded models
+   (real model entries carry more fields than the plan's test fixtures,
+   which were all a few hundred bytes), silently truncating the JSON and
+   producing `"parsing response body: unexpected end of JSON input"` for
+   `status`, `models`, and `unload` — while `load` (small response) worked
+   fine, making the failure look like an API-shape mismatch rather than a
+   client bug. Fixed: the cap now applies only when building an error
+   message (non-2xx path); a 2xx response is decoded directly via
+   `json.NewDecoder(resp.Body).Decode(out)` with no artificial size limit
+   (acceptable for a personal tool talking to a server on your own LAN).
+2. **Important: `lmsctl config show` never showed the *effective*
+   configuration** — despite its `Short` text, the design spec, and the
+   README all saying it does — it printed the config file's raw contents
+   only, ignoring `--host`/`--token`/`LMSCTL_HOST`/`LMSCTL_TOKEN`. Fixed by
+   adding `config.EffectiveDisplay(...)` (like `Resolve`, but tolerates a
+   missing host instead of erroring, since `show` should always print
+   *something* rather than fail) and having `configShowCmd` use it.
+3. **Important: `--json` was a persistent root flag, so `unload` and
+   `config` silently accepted and ignored it** (and `--help` on those
+   commands falsely advertised it under "Global Flags"). Fixed by making
+   `--json` a local flag on `status`, `models`, and `load` only (each
+   command's `init()` registers its own `Bool("json", false, ...)`, and
+   `RunE` reads it via `cmd.Flags().GetBool("json")` instead of a shared
+   package-level `flagJSON` var, which was removed from `cmd/root.go`).
+
+Two cheap, related cleanups rode along in the same fix: `cmd/load.go`'s
+`loadFlagContextLength`/`loadFlagFlashAttn`/`loadFlagOffloadKV` package
+vars were write-only dead storage (`buildLoadRequest` already reads flags
+through the `*pflag.FlagSet` accessors, never those vars) — removed in
+favor of plain `Flags().Int(...)`/`Flags().Bool(...)` registration; and
+`unloadCmd.RunE` now validates its `model`/`--all` combination before
+calling `newClient()`, so a misused invocation reports the right error
+even when no host is configured yet (the check still also lives inside
+`runUnload` itself, since tests call that function directly).

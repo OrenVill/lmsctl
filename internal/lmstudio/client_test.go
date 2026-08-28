@@ -1,0 +1,242 @@
+package lmstudio
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+func TestListModels_SendsGetAndParsesResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/models" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"models":[{"type":"llm","key":"openai/gpt-oss-20b","display_name":"GPT OSS 20B","loaded_instances":[]}]}`))
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(strings.TrimPrefix(srv.URL, "http://"), "")
+	got, err := c.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	if len(got.Models) != 1 || got.Models[0].Key != "openai/gpt-oss-20b" {
+		t.Errorf("unexpected result: %+v", got)
+	}
+}
+
+func TestListModels_SendsBearerTokenWhenSet(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Write([]byte(`{"models":[]}`))
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(strings.TrimPrefix(srv.URL, "http://"), "my-token")
+	if _, err := c.ListModels(context.Background()); err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	if gotAuth != "Bearer my-token" {
+		t.Errorf("Authorization header = %q, want %q", gotAuth, "Bearer my-token")
+	}
+}
+
+func TestListModels_OmitsAuthHeaderWhenNoToken(t *testing.T) {
+	var gotAuth string
+	seen := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		seen = true
+		w.Write([]byte(`{"models":[]}`))
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(strings.TrimPrefix(srv.URL, "http://"), "")
+	if _, err := c.ListModels(context.Background()); err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	if !seen || gotAuth != "" {
+		t.Errorf("Authorization header = %q, want empty", gotAuth)
+	}
+}
+
+func TestListModels_ConnectionRefusedReturnsErrUnreachable(t *testing.T) {
+	c := NewHTTPClient("127.0.0.1:1", "") // port 1 is reserved; nothing listens there
+	_, err := c.ListModels(context.Background())
+	var unreachable *ErrUnreachable
+	if !errors.As(err, &unreachable) {
+		t.Fatalf("err = %v, want *ErrUnreachable", err)
+	}
+}
+
+func TestListModels_401ReturnsErrUnauthorized(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(strings.TrimPrefix(srv.URL, "http://"), "wrong-token")
+	_, err := c.ListModels(context.Background())
+	var unauthorized *ErrUnauthorized
+	if !errors.As(err, &unauthorized) {
+		t.Fatalf("err = %v, want *ErrUnauthorized", err)
+	}
+}
+
+func TestListModels_500ReturnsGenericHTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte("internal error"))
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(strings.TrimPrefix(srv.URL, "http://"), "")
+	_, err := c.ListModels(context.Background())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "500") || !strings.Contains(err.Error(), "internal error") {
+		t.Errorf("err = %v, want it to mention the status code and body", err)
+	}
+}
+
+func TestListModels_MalformedJSONReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("not json"))
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(strings.TrimPrefix(srv.URL, "http://"), "")
+	_, err := c.ListModels(context.Background())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestLoadModel_SendsCorrectBodyAndParsesInstanceID(t *testing.T) {
+	var gotBody LoadModelRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/models/load" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Write([]byte(`{"type":"llm","instance_id":"inst-1","status":"loaded","load_time_seconds":1.5}`))
+	}))
+	defer srv.Close()
+
+	contextLength := 8192
+	c := NewHTTPClient(strings.TrimPrefix(srv.URL, "http://"), "")
+	got, err := c.LoadModel(context.Background(), LoadModelRequest{
+		Model:         "openai/gpt-oss-20b",
+		ContextLength: &contextLength,
+	})
+	if err != nil {
+		t.Fatalf("LoadModel: %v", err)
+	}
+	if got.InstanceID != "inst-1" {
+		t.Errorf("InstanceID = %q, want %q", got.InstanceID, "inst-1")
+	}
+	if gotBody.Model != "openai/gpt-oss-20b" || gotBody.ContextLength == nil || *gotBody.ContextLength != 8192 {
+		t.Errorf("unexpected request body: %+v", gotBody)
+	}
+}
+
+func TestLoadModel_404ReturnsErrModelNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(strings.TrimPrefix(srv.URL, "http://"), "")
+	_, err := c.LoadModel(context.Background(), LoadModelRequest{Model: "nonexistent/model"})
+	var notFound *ErrModelNotFound
+	if !errors.As(err, &notFound) {
+		t.Fatalf("err = %v, want *ErrModelNotFound", err)
+	}
+	if notFound.Model != "nonexistent/model" {
+		t.Errorf("Model = %q, want %q", notFound.Model, "nonexistent/model")
+	}
+}
+
+func TestUnloadModel_SendsInstanceID(t *testing.T) {
+	var gotBody unloadModelRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/models/unload" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Write([]byte(`{"instance_id":"inst-1"}`))
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(strings.TrimPrefix(srv.URL, "http://"), "")
+	if err := c.UnloadModel(context.Background(), "inst-1"); err != nil {
+		t.Fatalf("UnloadModel: %v", err)
+	}
+	if gotBody.InstanceID != "inst-1" {
+		t.Errorf("InstanceID = %q, want %q", gotBody.InstanceID, "inst-1")
+	}
+}
+
+func TestUnloadModel_404ReturnsErrInstanceNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(strings.TrimPrefix(srv.URL, "http://"), "")
+	err := c.UnloadModel(context.Background(), "inst-missing")
+	var notFound *ErrInstanceNotFound
+	if !errors.As(err, &notFound) {
+		t.Fatalf("err = %v, want *ErrInstanceNotFound", err)
+	}
+	if notFound.InstanceID != "inst-missing" {
+		t.Errorf("InstanceID = %q, want %q", notFound.InstanceID, "inst-missing")
+	}
+	// Confirm it's NOT ErrModelNotFound -- that error's advice ("run
+	// 'lmsctl models'") is for a model key the user typed, not an instance
+	// ID this package resolved itself.
+	var wrongType *ErrModelNotFound
+	if errors.As(err, &wrongType) {
+		t.Fatalf("err = %v, should not be *ErrModelNotFound", err)
+	}
+}
+
+func TestListModels_LargeResponseIsNotTruncated(t *testing.T) {
+	// Build a response body larger than maxErrorBodyBytes (4096) to prove
+	// success responses aren't capped the way error responses are.
+	var sb strings.Builder
+	sb.WriteString(`{"models":[`)
+	for i := 0; i < 60; i++ {
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		fmt.Fprintf(&sb, `{"type":"llm","key":"model/number-%d","display_name":"Model %d","loaded_instances":[]}`, i, i)
+	}
+	sb.WriteString(`]}`)
+	body := sb.String()
+	if len(body) <= maxErrorBodyBytes {
+		t.Fatalf("test fixture body is %d bytes, want > %d to actually exercise the no-cap path", len(body), maxErrorBodyBytes)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(strings.TrimPrefix(srv.URL, "http://"), "")
+	got, err := c.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	if len(got.Models) != 60 {
+		t.Errorf("len(Models) = %d, want 60 (response should not be truncated)", len(got.Models))
+	}
+}
