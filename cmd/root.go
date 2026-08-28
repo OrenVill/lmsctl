@@ -14,8 +14,10 @@ var (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "lmsctl",
-	Short: "Manage a remote LM Studio instance from the command line",
+	Use:           "lmsctl",
+	Short:         "Manage a remote LM Studio instance from the command line",
+	SilenceErrors: true,
+	SilenceUsage:  true,
 }
 
 // Execute runs the root command and exits the process on error.
