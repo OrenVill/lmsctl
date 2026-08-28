@@ -19,7 +19,8 @@ var modelsCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		return runModels(cmd, client, flagJSON)
+		jsonOut, _ := cmd.Flags().GetBool("json")
+		return runModels(cmd, client, jsonOut)
 	},
 }
 
@@ -67,5 +68,6 @@ func formatBytes(n int64) string {
 }
 
 func init() {
+	modelsCmd.Flags().Bool("json", false, "output machine-readable JSON")
 	rootCmd.AddCommand(modelsCmd)
 }

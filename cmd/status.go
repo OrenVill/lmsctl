@@ -18,7 +18,8 @@ var statusCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		return runStatus(cmd, client, eff.Host, flagJSON)
+		jsonOut, _ := cmd.Flags().GetBool("json")
+		return runStatus(cmd, client, eff.Host, jsonOut)
 	},
 }
 
@@ -67,5 +68,6 @@ func runStatus(cmd *cobra.Command, client lmstudio.Client, host string, jsonOut 
 }
 
 func init() {
+	statusCmd.Flags().Bool("json", false, "output machine-readable JSON")
 	rootCmd.AddCommand(statusCmd)
 }
