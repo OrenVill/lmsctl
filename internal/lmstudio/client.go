@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"time"
+	"strings"
 )
 
 // Client is the interface commands use to talk to LM Studio. Implemented by
@@ -26,17 +26,28 @@ type HTTPClient struct {
 	HTTPClient *http.Client
 }
 
-// NewHTTPClient builds an HTTPClient with a sane default timeout.
+var _ Client = (*HTTPClient)(nil)
+
+// NewHTTPClient builds an HTTPClient with no request timeout, since model
+// loads can take arbitrarily long; connection failures still fail fast via
+// the OS-level TCP error.
 func NewHTTPClient(host, token string) *HTTPClient {
+	host = strings.TrimPrefix(strings.TrimPrefix(host, "https://"), "http://")
 	return &HTTPClient{
 		BaseURL:    "http://" + host,
 		Token:      token,
-		HTTPClient: &http.Client{Timeout: 10 * time.Second},
+		HTTPClient: &http.Client{},
 	}
 }
 
-// httpStatusError wraps a non-2xx response that isn't handled by a more
-// specific typed error (401 -> ErrUnauthorized, 404 -> ErrModelNotFound).
+// maxErrorBodyBytes caps how much of a response body we read, so a
+// misdirected --host (a stray web server, a captive portal) can't dump an
+// arbitrarily large page into the terminal via an error message.
+const maxErrorBodyBytes = 4096
+
+// httpStatusError wraps a non-2xx response that do() itself doesn't turn
+// into a more specific error (401 is handled here as ErrUnauthorized;
+// callers like LoadModel may map this further, e.g. 404 to ErrModelNotFound).
 type httpStatusError struct {
 	StatusCode int
 	Body       string
@@ -71,7 +82,7 @@ func (c *HTTPClient) do(ctx context.Context, method, path string, body, out any)
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 	if err != nil {
 		return fmt.Errorf("reading response body: %w", err)
 	}
