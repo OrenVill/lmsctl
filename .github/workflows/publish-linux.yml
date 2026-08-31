@@ -1,45 +1,43 @@
 name: publish-linux
 
 # Runs whenever release-please publishes a GitHub Release (i.e. its release
-# PR gets merged to master), building and attaching Linux binaries.
+# PR gets merged to master), building and attaching Linux packages.
 on:
   release:
     types: [published]
 
 permissions:
   contents: write
+  id-token: write # required for cosign keyless (OIDC) signing
 
 jobs:
   build-and-upload:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.27"
 
-      - name: Build and package
+      - uses: sigstore/cosign-installer@v3
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
         env:
-          VERSION: ${{ github.event.release.tag_name }}
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          for ARCH in amd64 arm64; do
-            PKG_DIR="lmsctl-${VERSION}-linux-${ARCH}"
-            mkdir -p "dist/$PKG_DIR"
-            GOOS=linux GOARCH="$ARCH" go build -trimpath \
-              -ldflags "-s -w -X lmsctl/cmd.version=${VERSION}" \
-              -o "dist/$PKG_DIR/lmsctl" .
-            cp README.md "dist/$PKG_DIR/"
-            tar -C dist -czf "dist/${PKG_DIR}.tar.gz" "$PKG_DIR"
-            rm -rf "dist/$PKG_DIR"
-          done
-          (cd dist && sha256sum ./*.tar.gz > SHA256SUMS)
+          GITHUB_TOKEN: ${{ github.token }}
 
       - name: Upload release assets
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ github.event.release.tag_name }}" dist/*.tar.gz dist/SHA256SUMS
+        run: >
+          gh release upload "${{ github.event.release.tag_name }}"
+          dist/*.tar.gz dist/*.deb dist/*.rpm
+          dist/SHA256SUMS dist/SHA256SUMS.sig dist/SHA256SUMS.pem

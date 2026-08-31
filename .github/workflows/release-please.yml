@@ -15,3 +15,8 @@ jobs:
       - uses: googleapis/release-please-action@v4
         with:
           target-branch: master
+          # The default GITHUB_TOKEN can't trigger other workflows (GitHub's
+          # loop-prevention rule), so the release this creates would never
+          # fire publish-linux.yml's `release: published` trigger. A PAT
+          # sidesteps that. See RELEASE_PAT setup in the repo README.
+          token: ${{ secrets.RELEASE_PAT }}
