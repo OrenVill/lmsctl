@@ -16,6 +16,11 @@ var (
 	flagToken string
 )
 
+// version is overridden at build time via
+// -ldflags "-X lmsctl/cmd.version=vX.Y.Z" (see scripts/release.sh); a
+// source build stays "dev".
+var version = "dev"
+
 // palette is used by commands to style human-readable output. It's
 // disabled automatically when stdout isn't a terminal or NO_COLOR is set,
 // so it's safe to call unconditionally.
@@ -32,6 +37,7 @@ var (
 var rootCmd = &cobra.Command{
 	Use:           "lmsctl",
 	Short:         "Manage a remote LM Studio instance from the command line",
+	Version:       version,
 	SilenceErrors: true,
 	SilenceUsage:  true,
 }
