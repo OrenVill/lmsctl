@@ -47,6 +47,45 @@ func TestConfigSetHost_WritesHostToConfigFile(t *testing.T) {
 	}
 }
 
+func TestConfigSetHost_ShowsBannerOnFirstConfiguration(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	resetRootCmd(t)
+
+	out := &bytes.Buffer{}
+	rootCmd.SetOut(out)
+	rootCmd.SetArgs([]string{"config", "set-host", "192.168.1.50:1234"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out.String(), banner) {
+		t.Errorf("output missing the welcome banner on first configuration")
+	}
+}
+
+func TestConfigSetHost_NoBannerWhenHostAlreadyConfigured(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	resetRootCmd(t)
+
+	if err := config.Save(config.Config{Host: "old-host:1234"}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	out := &bytes.Buffer{}
+	rootCmd.SetOut(out)
+	rootCmd.SetArgs([]string{"config", "set-host", "new-host:5678"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if strings.Contains(out.String(), banner) {
+		t.Errorf("output = %q, should not show the banner when updating an already-configured host", out.String())
+	}
+	if !strings.Contains(out.String(), "new-host:5678") {
+		t.Errorf("output = %q, want it to still confirm the new host", out.String())
+	}
+}
+
 func TestConfigShow_RedactsToken(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
