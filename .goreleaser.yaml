@@ -1,0 +1,74 @@
+version: 2
+
+project_name: lmsctl
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: lmsctl
+    main: .
+    binary: lmsctl
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X lmsctl/cmd.version={{.Version}}
+
+archives:
+  - id: lmsctl
+    formats: [tar.gz]
+    name_template: "lmsctl_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+
+nfpms:
+  - id: lmsctl
+    package_name: lmsctl
+    vendor: OrenVill
+    homepage: https://github.com/OrenVill/lmsctl
+    maintainer: Orenvill <oren.villaret@gmail.com>
+    description: |
+      CLI for managing an LM Studio instance running on another machine on
+      your local network.
+    formats:
+      - deb
+      - rpm
+    bindir: /usr/bin
+    contents:
+      - src: README.md
+        dst: /usr/share/doc/lmsctl/README.md
+
+checksum:
+  name_template: SHA256SUMS
+
+signs:
+  - id: cosign-checksum
+    cmd: cosign
+    artifacts: checksum
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - "--output-signature=${signature}"
+      - "--output-certificate=${certificate}"
+      - "${artifact}"
+      - "--yes"
+
+changelog:
+  disable: true
+
+# release-please owns the GitHub Release object (created when its release
+# PR is merged); this config only builds and packages artifacts, which
+# publish-linux.yml then uploads to that existing release via `gh release
+# upload` -- goreleaser never creates or touches the release itself.
+release:
+  disable: true
